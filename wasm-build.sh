@@ -21,6 +21,22 @@ then
 	fi
 fi
 
+if $CI
+then
+    echo "
+
+
+                            applying patches
+
+
+"
+    wget -O- https://github.com/pmp-p/postgres/commit/23a4a59d484ab18847f1848d29f1287551958c9e.diff | patch -p1
+
+    sudo mkdir /pgdata
+    sudo chmod 777 /pgdata
+
+fi
+
 
 mkdir -p ${PREFIX}
 
@@ -93,20 +109,7 @@ then
 	exit 0
 fi
 
-if $CI
-then
-    echo "
 
-
-                            applying patches
-
-
-"
-    wget -O- https://github.com/pmp-p/postgres/commit/23a4a59d484ab18847f1848d29f1287551958c9e.diff | patch -p1
-
-
-
-fi
 
 
 
