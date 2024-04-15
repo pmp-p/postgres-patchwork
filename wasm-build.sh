@@ -167,7 +167,7 @@ END
 # FIXME: workaround for /conversion_procs/ make
 cp bin/disable-shared bin/o
 
-chmod +x bin/zic bin/disable-shared
+chmod +x bin/zic bin/disable-shared bin/o
 
 rm /srv/www/html/pygbag/pg/libpq.so /srv/www/html/pygbag/pg/libpq.so.map
 
