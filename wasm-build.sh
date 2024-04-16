@@ -121,16 +121,20 @@ echo "      =============== building wasm  ===================   "
 # was erased, default pfx is sdk dir
 export PREFIX=$PGROOT
 
-if [ -f ${PREFIX}/password ]
+if ${CI:-false}
 then
-    echo not changing db password
-else
-    echo password > ${PREFIX}/password
-fi
+    if [ -f ${PREFIX}/password ]
+    then
+        echo not changing db password
+    else
+        echo password > ${PREFIX}/password
+    fi
 
-if [ -f config.cache.emsdk ]
-then
-    cp config.cache.emsdk ${PREFIX}/
+    if [ -f config.cache.emsdk ]
+    then
+        echo "using config cache file"
+        cp config.cache.emsdk ${PREFIX}/
+    fi
 fi
 
 # -lwebsocket.js -sPROXY_POSIX_SOCKETS -pthread -sPROXY_TO_PTHREAD
@@ -196,7 +200,7 @@ rm ./src/backend/postgres.wasm
 # for zic and disable-shared
 PATH=$(pwd)/bin:$PATH
 
-if emmake make -j 6
+if emmake make -j $(nproc)
 then
 
 	if emmake make -s install >/dev/null
