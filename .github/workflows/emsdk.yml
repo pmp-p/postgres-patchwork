@@ -1,5 +1,18 @@
 name: WebAssembly build
-on: [push, workflow_dispatch]
+
+on:
+  workflow_dispatch:
+
+  release:
+    # this runs CI only when a release is created at first (and not when it is
+    # edited or published)
+    types: [created]
+
+  push:
+    branches: main
+
+  pull_request:
+    branches: main
 
 jobs:
   build:
@@ -11,7 +24,7 @@ jobs:
         SYS_PYTHON: /usr/bin/python3
 
     steps:
-    - uses: actions/checkout@v4.1.0
+    - uses: actions/checkout@v4.1.1
       with:
         fetch-depth: 1
 
@@ -37,9 +50,10 @@ jobs:
       run: |
         bash ./wasm-build.sh
 
+
     - name: Upload to Github Releases
       if: github.event_name == 'release'
-      uses: svenstaro/upload-release-action@2.3.0
+      uses: svenstaro/upload-release-action@2.9.0
       with:
         repo_token: ${{ secrets.GITHUB_TOKEN }}
         file: $GITHUB_WORKSPACE/dist/*
