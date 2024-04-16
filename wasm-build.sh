@@ -280,7 +280,7 @@ END
     then
         GITHUB_WORKSPACE=${GITHUB_WORKSPACE:-$(pwd)}
         mkdir -p $GITHUB_WORKSPACE/dist
-        cp -r ${PREFIX}/* $GITHUB_WORKSPACE/dist/
+        cp -r ${PREFIX} $GITHUB_WORKSPACE/dist/
     fi
 else
     echo build failed
