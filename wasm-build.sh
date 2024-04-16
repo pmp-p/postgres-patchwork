@@ -222,7 +222,7 @@ END
     	cat  > ${PREFIX}/initdb <<END
 #!/bin/bash
 . /opt/python-wasm-sdk/wasm32-bi-emscripten-shell.sh
-node ${PREFIX}/bin/initdb.js \$@ 2>&1 | grep --line-buffered -v ^var\\ Module
+node ${PREFIX}/bin/initdb.js \$@ 2>&1
 END
 
         # force node wasm version
@@ -268,7 +268,7 @@ echo "\$CMD < \$SQL.boot.sql"
 \$CMD < \$SQL.boot.sql 2>&1 | grep -v 'bootstrap>'
 read
 
-CMD="${PREFIX}/postgres  -F -O -j -c search_path=pg_catalog -c exit_on_error=true -c log_checkpoints=false template1"
+CMD="${PREFIX}/postgres --single -F -O -j -c search_path=pg_catalog -c exit_on_error=true -c log_checkpoints=false template1"
 echo "\$CMD < \$SQL.single.sql"
 \$CMD < \$SQL.single.sql
 read
