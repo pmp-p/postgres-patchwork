@@ -270,7 +270,7 @@ END
         . /data/git/pg/local.sh
     fi
 
-    echo "========================================================="
+    echo "========== $CI : $GITHUB_WORKSPACE ======"
 
     file ${PREFIX}/lib/lib*.so
 
@@ -278,9 +278,9 @@ END
 
     if ${CI:-false}
     then
-        GITHUB_WORKSPACE=${GITHUB_WORKSPACE:-$(pwd)}
         mkdir -p $GITHUB_WORKSPACE/dist
-        cp -r ${PREFIX} $GITHUB_WORKSPACE/dist/
+        #cp -rv ${PREFIX} $GITHUB_WORKSPACE/dist/
+        tar -cpRz ${PREFIX} > $GITHUB_WORKSPACE/dist/prefix.tar.gz
     fi
 else
     echo build failed
