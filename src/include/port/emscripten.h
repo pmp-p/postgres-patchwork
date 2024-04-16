@@ -22,31 +22,59 @@
 extern int	pg_char_to_encoding_private(const char *name);
 extern const char *pg_encoding_to_char_private(int encoding);
 extern int	pg_valid_server_encoding_id_private(int encoding);
+
+#if defined(pg_char_to_encoding)
+#undef pg_char_to_encoding
+#endif
 #define pg_char_to_encoding(encoding) pg_char_to_encoding_private(encoding)
+
+#if defined(pg_encoding_to_char)
+#undef pg_encoding_to_char
+#endif
 #define pg_encoding_to_char(encoding) pg_encoding_to_char_private(encoding)
+
+#if defined(pg_valid_server_encoding_id)
+#undef pg_valid_server_encoding_id
+#endif
 #define pg_valid_server_encoding_id(encoding) pg_valid_server_encoding_id_private(encoding)
 
 
-// this one is a wasi system call, so change its name everywhere.
+/*
+ * 'proc_exit' is a wasi system call, so change its name everywhere.
+ */
+
 #define proc_exit(arg) pg_proc_exit(arg)
 
 
-/* ************************************************ */
-/* popen / pclose for initdb is routed to stderr    */
+/*
+ * popen / pclose for initdb is routed to stderr
+ * link a pclose replacement when we are in exec.c ( PG_EXEC defined )
+ */
 
 #if defined(PG_EXEC)
-// exec.c
 #define pclose(stream) pg_pclose(stream)
 #include <stdio.h> // FILE
+
 int pg_pclose(FILE *stream) {
     puts("FIXME: pclose->pg_pclose: " __FILE__);
     return 0;
 }
 #endif // PG_EXEC
 
+/* and now popen will return stderr as file handle in initdb.c */
+#if defined(PG_INITDB)
+#define popen(command, mode) pg_popen(command, mode)
+#include <stdio.h> // FILE
+FILE *pg_popen(const char *command, const char *type) {
+    fprintf(stderr,"# popen[%s]\n", command);
+    return stderr;
+}
+#endif // PG_INITDB
 
-/* ******************************* */
-/*  handle pg_shmem.c special case */
+
+/*
+ *  handle pg_shmem.c special case
+ */
 
 #if defined(PG_SHMEM)
 #include <stdio.h>  // print
@@ -55,7 +83,10 @@ int pg_pclose(FILE *stream) {
 #include <sys/shm.h>
 #include <sys/stat.h>
 
-/* Shared memory control operation.  */
+/*
+ * Shared memory control operation.
+ */
+
 //extern int shmctl (int __shmid, int __cmd, struct shmid_ds *__buf);
 
 int
