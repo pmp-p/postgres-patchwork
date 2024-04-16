@@ -222,7 +222,7 @@ END
     	cat  > ${PREFIX}/initdb <<END
 #!/bin/bash
 . /opt/python-wasm-sdk/wasm32-bi-emscripten-shell.sh
-node ${PREFIX}/bin/initdb.js \$@ 2>&1
+node ${PREFIX}/bin/initdb.js \$@
 END
 
         # force node wasm version
