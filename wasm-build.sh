@@ -187,7 +187,7 @@ PATH=$(pwd)/bin:$PATH
 if emmake make -j 6
 then
 
-	if emmake make install
+	if emmake make -s install >/dev/null
 	then
 
 		mv -vf ./src/bin/initdb/initdb.wasm ./src/backend/postgres.wasm ./src/backend/postgres.map ${PREFIX}/bin/
@@ -274,10 +274,13 @@ END
 
     file ${PREFIX}/lib/lib*.so
 
+    echo "========================================================="
+
     if ${CI:-false}
     then
-        mkdir -p dist
-        cp -r ${PREFIX}/* dist/
+        GITHUB_WORKSPACE=${GITHUB_WORKSPACE:-$(pwd)}
+        mkdir -p $GITHUB_WORKSPACE/dist
+        cp -r ${PREFIX}/* $GITHUB_WORKSPACE/dist/
     fi
 else
     echo build failed
