@@ -121,20 +121,18 @@ echo "      =============== building wasm  ===================   "
 # was erased, default pfx is sdk dir
 export PREFIX=$PGROOT
 
-if ${CI:-false}
+if [ -f ${PREFIX}/password ]
 then
-    if [ -f ${PREFIX}/password ]
-    then
-        echo not changing db password
-    else
-        echo password > ${PREFIX}/password
-    fi
+    echo "not changing db password"
+else
+    echo password > ${PREFIX}/password
+fi
 
-    if [ -f config.cache.emsdk ]
-    then
-        echo "using config cache file"
-        cp config.cache.emsdk ${PREFIX}/
-    fi
+if [ -f ${PREFIX}/config.cache.emsdk ]
+then
+    echo "re-using config cache file from ${PREFIX}/config.cache.emsdk"
+else
+    cp config.cache.emsdk ${PREFIX}/
 fi
 
 # -lwebsocket.js -sPROXY_POSIX_SOCKETS -pthread -sPROXY_TO_PTHREAD
@@ -203,18 +201,19 @@ PATH=$(pwd)/bin:$PATH
 if emmake make -j $(nproc)
 then
 
-	if emmake make -s install >/dev/null
+	if emmake make -s install 2>&1 > /tmp/install.log
 	then
 
 		mv -vf ./src/bin/initdb/initdb.wasm ./src/backend/postgres.wasm ./src/backend/postgres.map ${PREFIX}/bin/
 		mv -vf ./src/bin/initdb/initdb ${PREFIX}/bin/initdb.js
 		mv -vf ./src/backend/postgres ${PREFIX}/bin/postgres.js
 
+        sed dynamic_shared_memory_type = 'sysv'
 
         cat  > ${PREFIX}/postgres <<END
 #!/bin/bash
 . /opt/python-wasm-sdk/wasm32-bi-emscripten-shell.sh
-PGDATA=${PGDATA} node ${PREFIX}/bin/postgres.js \$@
+PGDATA=${PGDATA} node ${PREFIX}/bin/postgres.js \$@ 2>&1 | grep --line-buffered -v ^var\\ Module
 END
 
         # force node wasm version
@@ -223,7 +222,7 @@ END
     	cat  > ${PREFIX}/initdb <<END
 #!/bin/bash
 . /opt/python-wasm-sdk/wasm32-bi-emscripten-shell.sh
-node ${PREFIX}/bin/initdb.js \$@
+node ${PREFIX}/bin/initdb.js \$@ 2>&1 | grep --line-buffered -v ^var\\ Module
 END
 
         # force node wasm version
@@ -233,27 +232,51 @@ END
 		chmod +x ${PREFIX}/initdb ${PREFIX}/bin/initdb
 
 		echo "initdb for PGDATA=${PGDATA} "
+
+    else
+        cat /tmp/install.log
+        echo "install failed"
+        exit 277
 	fi
+
+    # create empty db hack
 
 	cat >$PREFIX/initdb.sh <<END
 #!/bin/bash
 rm -rf ${PGDATA} /tmp/initdb-*.log
 TZ=UTC
-SQL=/tmp/initdb-\$\$.sql
+SQL=/tmp/initdb-\$\$
 ${PREFIX}/initdb -k -g -N -U postgres --pwfile=${PREFIX}/password --locale=C --locale-provider=libc --pgdata=${PGDATA} 2> /tmp/initdb-\$\$.log
-echo "Ready to run sql command through ${PREFIX}/postgres"
+
+grep -v dynamic_shared_memory_type ${PGDATA}/postgresql.conf > /tmp/pg-\$\$.conf
+mv /tmp/pg-\$\$.conf ${PGDATA}/postgresql.conf
+
 grep -v ^initdb.js /tmp/initdb-\$\$.log \\
  | tail -n +4 \\
  | head -n -1 \\
  > \$SQL
 
+head -n +11681 \$SQL > \${SQL}.boot.sql
+tail -n +11682 \$SQL > \${SQL}.single.sql
+
 if \${CI:-false}
 then
     cp -vf \$SQL ${PREFIX}/\$(md5sum \$SQL|cut -c1-32).sql
 fi
-${PREFIX}/postgres --boot -d 1 -c log_checkpoints=false -X 16777216 -k < /tmp/initdb-\$\$.sql 2>&1 | grep -v 'bootstrap>'
+CMD="${PREFIX}/postgres --boot -d 1 -c log_checkpoints=false -X 16777216 -k"
+echo "\$CMD < \$SQL.boot.sql"
+\$CMD < \$SQL.boot.sql 2>&1 | grep -v 'bootstrap>'
+read
+
+CMD="${PREFIX}/postgres  -F -O -j -c search_path=pg_catalog -c exit_on_error=true -c log_checkpoints=false template1"
+echo "\$CMD < \$SQL.single.sql"
+\$CMD < \$SQL.single.sql
+read
+
+
 echo cleaning up sql journal
-rm /tmp/initdb-\$\$.log /tmp/initdb-\$\$.sql
+read
+rm /tmp/initdb-\$\$.log /tmp/initdb-\$\$.*.sql
 END
 
 	chmod +x $PREFIX/*.sh
@@ -263,13 +286,12 @@ END
 
 	if [ -f ${PGDATA}/postmaster.pid ]
 	then
-		cat > $PREFIX/initsql.sh <<END
-cat $(realpath ../initdb.sql) | ${PREFIX}/postgres --single -F -O -j -c search_path=pg_catalog -c exit_on_error=true -c log_checkpoints=false template1
-END
+#		cat > $PREFIX/initsql.sh <<END
+#cat $(realpath ../initdb.sql) | ${PREFIX}/postgres --single -F -O -j -c search_path=pg_catalog -c exit_on_error=true -c log_checkpoints=false template1
+#END
 
+    read
 		chmod +x $PREFIX/*.sh
-
-		read
 
 		$PREFIX/initsql.sh
 		rm $PGDATA/postmaster.pid
@@ -299,6 +321,7 @@ END
         mkdir -p /tmp/sdk
         tar -cpRz ${PREFIX} > /tmp/sdk/pg.tar.gz
     fi
+
 else
     echo build failed
     exit 280
