@@ -278,9 +278,8 @@ END
 
     if ${CI:-false}
     then
-        mkdir -p $GITHUB_WORKSPACE/dist
-        #cp -rv ${PREFIX} $GITHUB_WORKSPACE/dist/
-        tar -cpRz ${PREFIX} > $GITHUB_WORKSPACE/dist/prefix.tar.gz
+        mkdir -p /tmp/sdk
+        tar -cpRz ${PREFIX} > /tmp/sdk/pg.tar.gz
     fi
 else
     echo build failed
