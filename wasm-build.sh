@@ -195,13 +195,17 @@ then
 		mv -vf ./src/backend/postgres ${PREFIX}/bin/postgres.js
 
 
-cat  > ${PREFIX}/bin/postgres <<END
+        cat  > ${PREFIX}/postgres.sh <<END
 #!/bin/bash
 . /opt/python-wasm-sdk/wasm32-bi-emscripten-shell.sh
 PGDATA=${PGDATA} node ${PREFIX}/bin/postgres.js \$@
 END
 
-		cat  > ${PREFIX}/bin/initdb <<END
+        cp -vf ${PREFIX}/postgres.sh ${PREFIX}/bin/postgres
+
+        chmod +x ${PREFIX}/postgres.sh
+
+    	cat  > ${PREFIX}/bin/initdb <<END
 #!/bin/bash
 . /opt/python-wasm-sdk/wasm32-bi-emscripten-shell.sh
 node ${PREFIX}/bin/initdb.js \$@
@@ -217,16 +221,19 @@ END
 #!/bin/bash
 rm -rf ${PGDATA} /tmp/initdb-*.log
 TZ=UTC
+SQL=/tmp/initdb-\$\$.sql
 ${PREFIX}/initdb -k -g -N -U postgres --pwfile=${PREFIX}/password --locale=C --locale-provider=libc --pgdata=${PGDATA} 2> /tmp/initdb-\$\$.log
 echo "Ready to run sql command through ${PREFIX}/postgres"
 grep -v ^initdb.js /tmp/initdb-\$\$.log \\
  | tail -n +4 \\
  | head -n -1 \\
- > /tmp/initdb-\$\$.sql
+ > \$SQL
 
-md5sum /tmp/initdb-\$\$.sql
-
-${PREFIX}/postgres --boot -d 1 -c log_checkpoints=false -X 16777216 -k < /tmp/initdb-\$\$.sql 2>&1 | grep -v 'bootstrap>'
+if \${CI:-false}
+then
+    cp -vf \$SQL ${PREFIX}/\$(md5sum \$SQL|cut -c1-32).sql
+fi
+${PREFIX}/postgres.sh --boot -d 1 -c log_checkpoints=false -X 16777216 -k < /tmp/initdb-\$\$.sql 2>&1 | grep -v 'bootstrap>'
 echo cleaning up sql journal
 rm /tmp/initdb-\$\$.log /tmp/initdb-\$\$.sql
 END
@@ -267,6 +274,12 @@ END
 
     file ${PREFIX}/lib/lib*.so
 
+    if ${CI:-false}
+    then
+        mkdir -p dist
+        cp -r ${PREFIX}/* dist/
+    fi
 else
     echo build failed
+    exit 280
 fi
