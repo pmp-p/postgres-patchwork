@@ -11,7 +11,7 @@ echo "
 
 "
 
-if echo "$@"|grep clean
+if echo "$@"|grep -q clean
 then
 	make clean
 	rm $(find |grep \\.js$) $(find |grep \\.wasm$)
@@ -21,12 +21,12 @@ then
 	fi
 fi
 
-if $CI
+if echo "$@"|grep -q patchwork
 then
     echo "
 
 
-                            applying patches
+        applying patchwork from https://github.com/pmp-p/postgres-patchwork/issues?q=is%3Aissue+is%3Aopen+label%3Apatch
 
 
 "
@@ -35,7 +35,7 @@ then
     wget -O- https://patch-diff.githubusercontent.com/raw/pmp-p/postgres-patchwork/pull/7.diff | patch -p1
     sudo mkdir /pgdata
     sudo chmod 777 /pgdata
-
+    exit 0
 fi
 
 
@@ -223,7 +223,8 @@ grep -v ^initdb.js /tmp/initdb-\$\$.log \\
  | tail -n +4 \\
  | head -n -1 \\
  > /tmp/initdb-\$\$.sql
-read
+
+md5sum /tmp/initdb-\$\$.sql
 
 ${PREFIX}/postgres --boot -d 1 -c log_checkpoints=false -X 16777216 -k < /tmp/initdb-\$\$.sql 2>&1 | grep -v 'bootstrap>'
 echo cleaning up sql journal
@@ -262,6 +263,7 @@ END
         . /data/git/pg/local.sh
     fi
 
+    echo "========================================================="
 
     file ${PREFIX}/lib/lib*.so
 
