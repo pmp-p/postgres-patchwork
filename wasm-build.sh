@@ -104,7 +104,7 @@ then
 	echo "      =============== building wasi  ===================   "
 	#make distclean
 
-	CONFIG_SITE=${PREFIX}/config.site CC="wasi-c" CXX="wasi-c++" $CNF --cache-file=../config.wasi && make
+	CONFIG_SITE=${PREFIX}/config.site CC="wasi-c" CXX="wasi-c++" $CNF --cache-file=${PREFIX}/config.cache.emsdk && make
 	# && make install
 
 	exit 0
@@ -128,13 +128,17 @@ else
     echo password > ${PREFIX}/password
 fi
 
+if [ -f config.cache.emsdk ]
+then
+    cp config.cache.emsdk ${PREFIX}/
+fi
 
 # -lwebsocket.js -sPROXY_POSIX_SOCKETS -pthread -sPROXY_TO_PTHREAD
 # CONFIG_SITE=$(pwd)/config.site EMCC_CFLAGS="--oformat=html" \
 
 # --disable-shared is not supported
 
-CONFIG_SITE==${PGDATA}/config.site  emconfigure $CNF  --with-template=emscripten --cache-file=../config.emsdk $@
+CONFIG_SITE==${PGDATA}/config.site emconfigure $CNF --with-template=emscripten --cache-file=${PREFIX}/config.cache.emsdk $@
 
 
 sed -i 's|ZIC= ./zic|ZIC= zic|g' ./src/timezone/Makefile
@@ -203,26 +207,28 @@ then
 		mv -vf ./src/backend/postgres ${PREFIX}/bin/postgres.js
 
 
-        cat  > ${PREFIX}/postgres.sh <<END
+        cat  > ${PREFIX}/postgres <<END
 #!/bin/bash
 . /opt/python-wasm-sdk/wasm32-bi-emscripten-shell.sh
 PGDATA=${PGDATA} node ${PREFIX}/bin/postgres.js \$@
 END
 
-        cp -vf ${PREFIX}/postgres.sh ${PREFIX}/bin/postgres
+        # force node wasm version
+        cp -vf ${PREFIX}/postgres ${PREFIX}/bin/postgres
 
-        chmod +x ${PREFIX}/postgres.sh
-
-    	cat  > ${PREFIX}/bin/initdb <<END
+    	cat  > ${PREFIX}/initdb <<END
 #!/bin/bash
 . /opt/python-wasm-sdk/wasm32-bi-emscripten-shell.sh
 node ${PREFIX}/bin/initdb.js \$@
 END
 
-		chmod +x ${PREFIX}/bin/postgres ${PREFIX}/bin/initdb
+        # force node wasm version
+        cp -vf ${PREFIX}/initdb.sh ${PREFIX}/bin/initdb
+
+        chmod +x ${PREFIX}/postgres ${PREFIX}/bin/postgres
+		chmod +x ${PREFIX}/initdb ${PREFIX}/bin/initdb
 
 		echo "initdb for PGDATA=${PGDATA} "
-
 	fi
 
 	cat >$PREFIX/initdb.sh <<END
@@ -241,7 +247,7 @@ if \${CI:-false}
 then
     cp -vf \$SQL ${PREFIX}/\$(md5sum \$SQL|cut -c1-32).sql
 fi
-${PREFIX}/postgres.sh --boot -d 1 -c log_checkpoints=false -X 16777216 -k < /tmp/initdb-\$\$.sql 2>&1 | grep -v 'bootstrap>'
+${PREFIX}/postgres --boot -d 1 -c log_checkpoints=false -X 16777216 -k < /tmp/initdb-\$\$.sql 2>&1 | grep -v 'bootstrap>'
 echo cleaning up sql journal
 rm /tmp/initdb-\$\$.log /tmp/initdb-\$\$.sql
 END
@@ -249,7 +255,7 @@ END
 	chmod +x $PREFIX/*.sh
 
 	$PREFIX/initdb.sh
-	echo "initdb done, now init sql default database"
+	echo "initdb.sh done, now init sql default database"
 
 	if [ -f ${PGDATA}/postmaster.pid ]
 	then
