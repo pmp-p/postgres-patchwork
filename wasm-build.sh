@@ -117,8 +117,16 @@ fi
 echo "      =============== building wasm  ===================   "
 
 . /opt/python-wasm-sdk/wasm32-bi-emscripten-shell.sh
+
 # was erased, default pfx is sdk dir
 export PREFIX=$PGROOT
+
+if [ -f ${PREFIX}/password ]
+then
+    echo not changing db password
+else
+    echo password > ${PREFIX}/password
+fi
 
 
 # -lwebsocket.js -sPROXY_POSIX_SOCKETS -pthread -sPROXY_TO_PTHREAD
