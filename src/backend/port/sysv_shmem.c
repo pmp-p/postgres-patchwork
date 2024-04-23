@@ -161,7 +161,7 @@ InternalIpcMemoryCreate(IpcMemoryKey memKey, Size size)
 	if (shmid < 0)
 	{
 		int			shmget_errno = errno;
-
+#if !defined(__EMSCRIPTEN__) && !defined(__wasi__)
 		/*
 		 * Fail quietly if error indicates a collision with existing segment.
 		 * One would expect EEXIST, given that we said IPC_EXCL, but perhaps
@@ -212,7 +212,7 @@ InternalIpcMemoryCreate(IpcMemoryKey memKey, Size size)
 						 (int) shmid, IPC_RMID);
 			}
 		}
-
+#endif /* wasm */
 		/*
 		 * Else complain and abort.
 		 *

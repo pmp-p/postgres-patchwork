@@ -3,6 +3,16 @@
 #ifndef I_EMSCRIPTEN
 #define I_EMSCRIPTEN
 
+#include <emscripten.h>
+
+/*
+ * https://github.com/electric-sql/postgres-wasm/pull/1/files#diff-6e542ba2eb1d83ef90e65cdc0912b51a295184701c7e3bd236937c43c4cac4b9R63
+ */
+
+#define WAIT_USE_POLL 1
+
+/* internal size 8 is invalid for passed-by-value type */
+/* #define USE_FLOAT8_BYVAL 1 */
 
 #define HAVE_LINUX_EIDRM_BUG
 /*
@@ -16,6 +26,8 @@
 // force the name used with --single
 #define WASM_USERNAME "postgres"
 
+/* reduce size */
+#define PG_FORCE_DISABLE_INLINE
 
 // we want client and server in the same lib for now.
 
@@ -59,6 +71,8 @@ int pg_pclose(FILE *stream) {
     puts("FIXME: pclose->pg_pclose: " __FILE__);
     return 0;
 }
+
+
 #endif // PG_EXEC
 
 /* and now popen will return stderr as file handle in initdb.c */
@@ -66,8 +80,8 @@ int pg_pclose(FILE *stream) {
 #define popen(command, mode) pg_popen(command, mode)
 #include <stdio.h> // FILE
 FILE *pg_popen(const char *command, const char *type) {
-    fprintf(stderr,"# popen[%s]\n", command);
-    return stderr;
+	fprintf(stderr,"# popen[%s]\n", command);
+	return stderr;
 }
 #endif // PG_INITDB
 
@@ -91,37 +105,45 @@ FILE *pg_popen(const char *command, const char *type) {
 
 int
 shmctl (int __shmid, int __cmd, struct shmid_ds *__buf) {
-    printf("FIXME: int shmctl (int __shmid=%d, int __cmd=%d, struct shmid_ds *__buf=%p)\n", __shmid, __cmd, __buf);
-    return 0;
+	printf("FIXME: int shmctl (int __shmid=%d, int __cmd=%d, struct shmid_ds *__buf=%p)\n", __shmid, __cmd, __buf);
+	return 0;
 }
 
 
 void *FAKE_SHM ;
+key_t FAKE_KEY = 0;
 
 /* Get shared memory segment.  */
 // extern int shmget (key_t __key, size_t __size, int __shmflg);
 int
 shmget (key_t __key, size_t __size, int __shmflg) {
-    printf("FIXING: int shmget (key_t __key=%d, size_t __size=%d, int __shmflg=%d)\n", __key, __size, __shmflg);
-    FAKE_SHM = malloc(__size);
-    return 666;
+	printf("# FIXING: int shmget (key_t __key=%d, size_t __size=%d, int __shmflg=%d)\n", __key, __size, __shmflg);
+	if (!FAKE_KEY) {
+		FAKE_SHM = malloc(__size);
+		FAKE_KEY = 666;
+		return FAKE_KEY;
+	} else {
+		printf("# ERROR: int shmget (key_t __key=%d, size_t __size=%d, int __shmflg=%d)\n", __key, __size, __shmflg);
+		abort();
+	}
+	return -1;
 }
 
 /* Attach shared memory segment.  */
 // extern void *shmat (int __shmid, const void *__shmaddr, int __shmflg);
 void *shmat (int __shmid, const void *__shmaddr, int __shmflg) {
-    printf("FIXING: void *shmat (int __shmid=%d, const void *__shmaddr=%p, int __shmflg=%d)\n", __shmid, __shmaddr, __shmflg);
-   	if (__shmid==666)
-    	return FAKE_SHM;
-   	return NULL;
+	printf("# FIXING: void *shmat (int __shmid=%d, const void *__shmaddr=%p, int __shmflg=%d)\n", __shmid, __shmaddr, __shmflg);
+	if (__shmid==666)
+		return FAKE_SHM;
+	return NULL;
 }
 
 /* Detach shared memory segment.  */
 // extern int shmdt (const void *__shmaddr);
 int
 shmdt (const void *__shmaddr) {
-    puts("FIXME: int shmdt (const void *__shmaddr)");
-    return 0;
+	puts("# FIXME: int shmdt (const void *__shmaddr)");
+	return 0;
 }
 
 #endif // PG_SHMEM
