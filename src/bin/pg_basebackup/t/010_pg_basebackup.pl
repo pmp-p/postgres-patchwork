@@ -1,9 +1,8 @@
 
-# Copyright (c) 2021-2024, PostgreSQL Global Development Group
+# Copyright (c) 2021-2023, PostgreSQL Global Development Group
 
 use strict;
-use warnings FATAL => 'all';
-use Config;
+use warnings;
 use File::Basename qw(basename dirname);
 use File::Path     qw(rmtree);
 use PostgreSQL::Test::Cluster;
@@ -77,7 +76,7 @@ $node->command_fails([ @pg_basebackup_defs, '-D', "$tempdir/backup", '-n' ],
 ok(-d "$tempdir/backup", 'backup directory was created and left behind');
 rmtree("$tempdir/backup");
 
-open my $conf, '>>', "$pgdata/postgresql.conf" or die $!;
+open my $conf, '>>', "$pgdata/postgresql.conf";
 print $conf "max_replication_slots = 10\n";
 print $conf "max_wal_senders = 10\n";
 print $conf "wal_level = replica\n";
@@ -175,17 +174,7 @@ foreach my $filename (
 	qw(backup_label tablespace_map postgresql.auto.conf.tmp
 	current_logfiles.tmp global/pg_internal.init.123))
 {
-	open my $file, '>>', "$pgdata/$filename" or die $!;
-	print $file "DONOTCOPY";
-	close $file;
-}
-
-# Test that macOS system files are skipped. Only test on non-macOS systems
-# however since creating incorrect .DS_Store files on a macOS system may have
-# unintended side effects.
-if ($Config{osname} ne 'darwin')
-{
-	open my $file, '>>', "$pgdata/.DS_Store" or die $!;
+	open my $file, '>>', "$pgdata/$filename";
 	print $file "DONOTCOPY";
 	close $file;
 }
@@ -234,10 +223,10 @@ SKIP:
 		"check backup dir permissions");
 }
 
-# Only archive_status and summaries directories should be copied in pg_wal/.
+# Only archive_status directory should be copied in pg_wal/.
 is_deeply(
 	[ sort(slurp_dir("$tempdir/backup/pg_wal/")) ],
-	[ sort qw(. .. archive_status summaries) ],
+	[ sort qw(. .. archive_status) ],
 	'no WAL files copied');
 
 # Contents of these directories should not be copied.
@@ -257,12 +246,6 @@ foreach my $filename (
 	global/pg_internal.init global/pg_internal.init.123))
 {
 	ok(!-f "$tempdir/backup/$filename", "$filename not copied");
-}
-
-# We only test .DS_Store files being skipped on non-macOS systems
-if ($Config{osname} ne 'darwin')
-{
-	ok(!-f "$tempdir/backup/.DS_Store", ".DS_Store not copied");
 }
 
 # Unlogged relation forks other than init should not be copied
@@ -401,7 +384,8 @@ SKIP:
 {
 	my $tar = $ENV{TAR};
 	# don't check for a working tar here, to accommodate various odd
-	# cases. If tar doesn't work the init_from_backup below will fail.
+	# cases such as AIX. If tar doesn't work the init_from_backup below
+	# will fail.
 	skip "no tar program available", 1
 	  if (!defined $tar || $tar eq '');
 
@@ -423,7 +407,7 @@ SKIP:
 	my $tblspcoid = $1;
 	my $escapedRepTsDir = $realRepTsDir;
 	$escapedRepTsDir =~ s/\\/\\\\/g;
-	open my $mapfile, '>', $node2->data_dir . '/tablespace_map' or die $!;
+	open my $mapfile, '>', $node2->data_dir . '/tablespace_map';
 	print $mapfile "$tblspcoid $escapedRepTsDir\n";
 	close $mapfile;
 
@@ -783,19 +767,6 @@ my $checksum = $node->safe_psql('postgres', 'SHOW data_checksums;');
 is($checksum, 'on', 'checksums are enabled');
 rmtree("$tempdir/backupxs_sl_R");
 
-$node->command_ok(
-	[
-		@pg_basebackup_defs, '-D', "$tempdir/backup_dbname_R", '-X',
-		'stream', '-d', "dbname=db1", '-R',
-	],
-	'pg_basebackup with dbname and -R runs');
-like(
-	slurp_file("$tempdir/backup_dbname_R/postgresql.auto.conf"),
-	qr/dbname=db1/m,
-	'recovery conf file sets dbname');
-
-rmtree("$tempdir/backup_dbname_R");
-
 # create tables to corrupt and get their relfilenodes
 my $file_corrupt1 = $node->safe_psql('postgres',
 	q{CREATE TABLE corrupt1 AS SELECT a FROM generate_series(1,10000) AS a; ALTER TABLE corrupt1 SET (autovacuum_enabled=false); SELECT pg_relation_filepath('corrupt1')}
@@ -977,21 +948,5 @@ $node->safe_psql('postgres', "DROP TABLESPACE tblspc2;");
 $backupdir = $node->backup_dir . '/backup3';
 my @dst_tblspc = glob "$backupdir/pg_tblspc/$tblspc_oid/PG_*";
 is(@dst_tblspc, 1, 'tblspc directory copied');
-
-# Can't take backup with referring manifest of different cluster
-#
-# Set up another new database instance with force initdb option. We don't want
-# to initializing database system by copying initdb template for this, because
-# we want it to be a separate cluster with a different system ID.
-my $node2 = PostgreSQL::Test::Cluster->new('node2');
-$node2->init(force_initdb => 1, has_archiving => 1, allows_streaming => 1);
-$node2->append_conf('postgresql.conf', 'summarize_wal = on');
-$node2->start;
-
-$node2->command_fails_like(
-	[ @pg_basebackup_defs, '-D', "$tempdir" . '/diff_sysid',
-		'--incremental', "$backupdir" . '/backup_manifest' ],
-	qr/manifest system identifier is .*, but database system identifier is/,
-	"pg_basebackup fails with different database system manifest");
 
 done_testing();

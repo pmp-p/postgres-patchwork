@@ -3,7 +3,7 @@
  * libpq_source.c
  *	  Functions for fetching files from a remote server via libpq.
  *
- * Copyright (c) 2013-2024, PostgreSQL Global Development Group
+ * Copyright (c) 2013-2023, PostgreSQL Global Development Group
  *
  *-------------------------------------------------------------------------
  */
@@ -117,7 +117,6 @@ init_libpq_conn(PGconn *conn)
 	run_simple_command(conn, "SET statement_timeout = 0");
 	run_simple_command(conn, "SET lock_timeout = 0");
 	run_simple_command(conn, "SET idle_in_transaction_session_timeout = 0");
-	run_simple_command(conn, "SET transaction_timeout = 0");
 
 	/*
 	 * we don't intend to do any updates, put the connection in read-only mode
@@ -299,16 +298,7 @@ libpq_traverse_files(rewind_source *source, process_file_callback_t callback)
 		link_target = PQgetvalue(res, i, 3);
 
 		if (link_target[0])
-		{
-			/*
-			 * In-place tablespaces are directories located in pg_tblspc/ with
-			 * relative paths.
-			 */
-			if (is_absolute_path(link_target))
-				type = FILE_TYPE_SYMLINK;
-			else
-				type = FILE_TYPE_DIRECTORY;
-		}
+			type = FILE_TYPE_SYMLINK;
 		else if (isdir)
 			type = FILE_TYPE_DIRECTORY;
 		else

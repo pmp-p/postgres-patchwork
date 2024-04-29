@@ -4,7 +4,7 @@
  *	  routines to convert a string (legal ascii representation of node) back
  *	  to nodes
  *
- * Portions Copyright (c) 1996-2024, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2023, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -498,9 +498,14 @@ nodeRead(const char *token, int tok_len)
 			result = (Node *) makeString(debackslash(token + 1, tok_len - 2));
 			break;
 		case T_BitString:
-			/* need to remove backslashes, but there are no quotes */
-			result = (Node *) makeBitString(debackslash(token, tok_len));
-			break;
+			{
+				char	   *val = palloc(tok_len + 1);
+
+				memcpy(val, token, tok_len);
+				val[tok_len] = '\0';
+				result = (Node *) makeBitString(val);
+				break;
+			}
 		default:
 			elog(ERROR, "unrecognized node type: %d", (int) type);
 			result = NULL;		/* keep compiler happy */

@@ -3,7 +3,7 @@
  * pgstat_shmem.c
  *	  Storage of stats entries in shared memory
  *
- * Copyright (c) 2001-2024, PostgreSQL Global Development Group
+ * Copyright (c) 2001-2023, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
  *	  src/backend/utils/activity/pgstat_shmem.c
@@ -64,7 +64,6 @@ static const dshash_parameters dsh_params = {
 	sizeof(PgStatShared_HashEntry),
 	pgstat_cmp_hash_key,
 	pgstat_hash_hash_key,
-	dshash_memcpy,
 	LWTRANCHE_PGSTATS_HASH
 };
 
@@ -181,7 +180,7 @@ StatsShmemInit(void)
 		 * With the limit in place, create the dshash table. XXX: It'd be nice
 		 * if there were dshash_create_in_place().
 		 */
-		dsh = dshash_create(dsa, &dsh_params, NULL);
+		dsh = dshash_create(dsa, &dsh_params, 0);
 		ctl->hash_handle = dshash_get_hash_table_handle(dsh);
 
 		/* lift limit set above */

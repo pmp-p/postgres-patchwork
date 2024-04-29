@@ -1,41 +1,12 @@
 
-# Copyright (c) 2021-2024, PostgreSQL Global Development Group
+# Copyright (c) 2021-2023, PostgreSQL Global Development Group
 
 use strict;
-use warnings FATAL => 'all';
+use warnings;
 
 use PostgreSQL::Test::Cluster;
 use PostgreSQL::Test::Utils;
 use Test::More;
-
-# Check the initial state of the data generated.  Tables for tellers and
-# branches use NULL for their filler attribute.  The table accounts uses
-# a non-NULL filler.  The history table should have no data.
-sub check_data_state
-{
-	local $Test::Builder::Level = $Test::Builder::Level + 1;
-	my $node = shift;
-	my $type = shift;
-
-	my $sql_result = $node->safe_psql('postgres',
-		'SELECT count(*) AS null_count FROM pgbench_accounts WHERE filler IS NULL LIMIT 10;'
-	);
-	is($sql_result, '0',
-		"$type: filler column of pgbench_accounts has no NULL data");
-	$sql_result = $node->safe_psql('postgres',
-		'SELECT count(*) AS null_count FROM pgbench_branches WHERE filler IS NULL;'
-	);
-	is($sql_result, '1',
-		"$type: filler column of pgbench_branches has only NULL data");
-	$sql_result = $node->safe_psql('postgres',
-		'SELECT count(*) AS null_count FROM pgbench_tellers WHERE filler IS NULL;'
-	);
-	is($sql_result, '10',
-		"$type: filler column of pgbench_tellers has only NULL data");
-	$sql_result = $node->safe_psql('postgres',
-		'SELECT count(*) AS data_count FROM pgbench_history;');
-	is($sql_result, '0', "$type: pgbench_history has no data");
-}
 
 # start a pgbench specific server
 my $node = PostgreSQL::Test::Cluster->new('main');
@@ -96,9 +67,6 @@ $node->pgbench(
 	],
 	'pgbench scale 1 initialization',);
 
-# Check data state, after client-side data generation.
-check_data_state($node, 'client-side');
-
 # Again, with all possible options
 $node->pgbench(
 	'--initialize --init-steps=dtpvg --scale=1 --unlogged-tables --fillfactor=98 --foreign-keys --quiet --tablespace=regress_pgbench_tap_1_ts --index-tablespace=regress_pgbench_tap_1_ts --partitions=2 --partition-method=hash',
@@ -132,9 +100,6 @@ $node->pgbench(
 		qr{done in \d+\.\d\d s }
 	],
 	'pgbench --init-steps');
-
-# Check data state, after server-side data generation.
-check_data_state($node, 'server-side');
 
 # Run all builtin scripts, for a few transactions each
 $node->pgbench(
@@ -290,7 +255,7 @@ select column1::jsonb from (values (:value), (:long)) as q;
 my $log = PostgreSQL::Test::Utils::slurp_file($node->logfile);
 unlike(
 	$log,
-	qr[DETAIL:  Parameters: \$1 = '\{ invalid ',],
+	qr[DETAIL:  parameters: \$1 = '\{ invalid ',],
 	"no parameters logged");
 $log = undef;
 
@@ -331,7 +296,7 @@ select column1::jsonb from (values (:value), (:long)) as q;
 $log = PostgreSQL::Test::Utils::slurp_file($node->logfile);
 like(
 	$log,
-	qr[DETAIL:  Parameters: \$1 = '\{ invalid ', \$2 = '''Valame Dios!'' dijo Sancho; ''no le dije yo a vuestra merced que mirase bien lo que hacia\?'''],
+	qr[DETAIL:  parameters: \$1 = '\{ invalid ', \$2 = '''Valame Dios!'' dijo Sancho; ''no le dije yo a vuestra merced que mirase bien lo que hacia\?'''],
 	"parameter report does not truncate");
 $log = undef;
 
@@ -376,7 +341,7 @@ select column1::jsonb from (values (:value), (:long)) as q;
 $log = PostgreSQL::Test::Utils::slurp_file($node->logfile);
 like(
 	$log,
-	qr[DETAIL:  Parameters: \$1 = '\{ inval\.\.\.', \$2 = '''Valame\.\.\.'],
+	qr[DETAIL:  parameters: \$1 = '\{ inval\.\.\.', \$2 = '''Valame\.\.\.'],
 	"parameter report truncates");
 $log = undef;
 
@@ -814,27 +779,6 @@ $node->pgbench(
 }
 	});
 
-# Working \startpipeline with \syncpipeline
-$node->pgbench(
-	'-t 1 -n -M extended',
-	0,
-	[ qr{type: .*/001_pgbench_pipeline_sync}, qr{actually processed: 1/1} ],
-	[],
-	'working \startpipeline with \syncpipeline',
-	{
-		'001_pgbench_pipeline_sync' => q{
--- test startpipeline
-\startpipeline
-select 1;
-\syncpipeline
-\syncpipeline
-select 2;
-\syncpipeline
-select 3;
-\endpipeline
-}
-	});
-
 # Working \startpipeline in prepared query mode
 $node->pgbench(
 	'-t 1 -n -M prepared',
@@ -922,21 +866,6 @@ $node->pgbench(
 		'001_pgbench_pipeline_6' => q{
 -- startpipeline only
 \startpipeline
-}
-	});
-
-# Try \startpipeline with \syncpipeline without \endpipeline
-$node->pgbench(
-	'-t 2 -n -M extended',
-	2,
-	[],
-	[qr{end of script reached with pipeline open}],
-	'error: call \startpipeline and \syncpipeline without \endpipeline',
-	{
-		'001_pgbench_pipeline_7' => q{
--- startpipeline with \syncpipeline only
-\startpipeline
-\syncpipeline
 }
 	});
 
@@ -1352,7 +1281,7 @@ my $err_pattern =
   . "\\1";
 
 $node->pgbench(
-	"-n -c 2 -t 1 --debug --verbose-errors --max-tries 2",
+	"-n -c 2 -t 1 -d --verbose-errors --max-tries 2",
 	0,
 	[
 		qr{processed: 2/2\b},
@@ -1539,32 +1468,6 @@ SELECT pg_advisory_unlock_all();
 # Clean up
 $node->safe_psql('postgres', 'DROP TABLE first_client_table, xy;');
 
-# Test --exit-on-abort
-$node->safe_psql('postgres',
-	'CREATE TABLE counter(i int); '.
-	'INSERT INTO counter VALUES (0);'
-);
-
-$node->pgbench(
-	'-t 10 -c 2 -j 2 --exit-on-abort',
-	2,
-	[],
-	[
-		qr{division by zero},
-		qr{Run was aborted due to an error in thread}
-	],
-	'test --exit-on-abort',
-	{
-		'001_exit_on_abort' => q{
-update counter set i = i+1 returning i \gset
-\if :i = 5
-\set y 1/0
-\endif
-}
-	});
-
-# Clean up
-$node->safe_psql('postgres', 'DROP TABLE counter;');
 
 # done
 $node->safe_psql('postgres', 'DROP TABLESPACE regress_pgbench_tap_1_ts');

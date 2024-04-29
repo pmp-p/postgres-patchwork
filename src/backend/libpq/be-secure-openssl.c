@@ -4,7 +4,7 @@
  *	  functions for OpenSSL support in the backend.
  *
  *
- * Portions Copyright (c) 1996-2024, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2023, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -67,12 +67,6 @@ static int	ssl_external_passwd_cb(char *buf, int size, int rwflag, void *userdat
 static int	dummy_ssl_passwd_cb(char *buf, int size, int rwflag, void *userdata);
 static int	verify_cb(int ok, X509_STORE_CTX *ctx);
 static void info_cb(const SSL *ssl, int type, int args);
-static int	alpn_cb(SSL *ssl,
-					const unsigned char **out,
-					unsigned char *outlen,
-					const unsigned char *in,
-					unsigned int inlen,
-					void *userdata);
 static bool initialize_dh(SSL_CTX *context, bool isServerStart);
 static bool initialize_ecdh(SSL_CTX *context, bool isServerStart);
 static const char *SSLerrmessage(unsigned long ecode);
@@ -201,7 +195,7 @@ be_tls_init(bool isServerStart)
 		{
 			ereport(isServerStart ? FATAL : LOG,
 			/*- translator: first %s is a GUC option name, second %s is its value */
-					(errmsg("%s setting \"%s\" not supported by this build",
+					(errmsg("\"%s\" setting \"%s\" not supported by this build",
 							"ssl_min_protocol_version",
 							GetConfigOption("ssl_min_protocol_version",
 											false, false))));
@@ -224,7 +218,7 @@ be_tls_init(bool isServerStart)
 		{
 			ereport(isServerStart ? FATAL : LOG,
 			/*- translator: first %s is a GUC option name, second %s is its value */
-					(errmsg("%s setting \"%s\" not supported by this build",
+					(errmsg("\"%s\" setting \"%s\" not supported by this build",
 							"ssl_max_protocol_version",
 							GetConfigOption("ssl_max_protocol_version",
 											false, false))));
@@ -251,7 +245,7 @@ be_tls_init(bool isServerStart)
 		{
 			ereport(isServerStart ? FATAL : LOG,
 					(errmsg("could not set SSL protocol version range"),
-					 errdetail("%s cannot be higher than %s",
+					 errdetail("\"%s\" cannot be higher than \"%s\"",
 							   "ssl_min_protocol_version",
 							   "ssl_max_protocol_version")));
 			goto error;
@@ -438,9 +432,6 @@ be_tls_open_server(Port *port)
 	/* set up debugging/info callback */
 	SSL_CTX_set_info_callback(SSL_context, info_cb);
 
-	/* enable ALPN */
-	SSL_CTX_set_alpn_select_cb(SSL_context, alpn_cb, port);
-
 	if (!(port->ssl = SSL_new(SSL_context)))
 	{
 		ereport(COMMERROR,
@@ -578,32 +569,6 @@ aloop:
 				break;
 		}
 		return -1;
-	}
-
-	/* Get the protocol selected by ALPN */
-	port->alpn_used = false;
-	{
-		const unsigned char *selected;
-		unsigned int len;
-
-		SSL_get0_alpn_selected(port->ssl, &selected, &len);
-
-		/* If ALPN is used, check that we negotiated the expected protocol */
-		if (selected != NULL)
-		{
-			if (len == strlen(PG_ALPN_PROTOCOL) &&
-				memcmp(selected, PG_ALPN_PROTOCOL, strlen(PG_ALPN_PROTOCOL)) == 0)
-			{
-				port->alpn_used = true;
-			}
-			else
-			{
-				/* shouldn't happen */
-				ereport(COMMERROR,
-						(errcode(ERRCODE_PROTOCOL_VIOLATION),
-						 errmsg("received SSL connection request with unexpected ALPN protocol")));
-			}
-		}
 	}
 
 	/* Get client certificate, if available. */
@@ -882,6 +847,8 @@ be_tls_write(Port *port, void *ptr, size_t len, int *waitfor)
  *
  * These functions are closely modelled on the standard socket BIO in OpenSSL;
  * see sock_read() and sock_write() in OpenSSL's crypto/bio/bss_sock.c.
+ * XXX OpenSSL 1.0.1e considers many more errcodes than just EINTR as reasons
+ * to retry; do we need to adopt their logic for that?
  */
 
 static BIO_METHOD *my_bio_methods = NULL;
@@ -1294,48 +1261,6 @@ info_cb(const SSL *ssl, int type, int args)
 	}
 }
 
-/* See pqcomm.h comments on OpenSSL implementation of ALPN (RFC 7301) */
-static const unsigned char alpn_protos[] = PG_ALPN_PROTOCOL_VECTOR;
-
-/*
- * Server callback for ALPN negotiation. We use the standard "helper" function
- * even though currently we only accept one value.
- */
-static int
-alpn_cb(SSL *ssl,
-		const unsigned char **out,
-		unsigned char *outlen,
-		const unsigned char *in,
-		unsigned int inlen,
-		void *userdata)
-{
-	/*
-	 * Why does OpenSSL provide a helper function that requires a nonconst
-	 * vector when the callback is declared to take a const vector? What are
-	 * we to do with that?
-	 */
-	int			retval;
-
-	Assert(userdata != NULL);
-	Assert(out != NULL);
-	Assert(outlen != NULL);
-	Assert(in != NULL);
-
-	retval = SSL_select_next_proto((unsigned char **) out, outlen,
-								   alpn_protos, sizeof(alpn_protos),
-								   in, inlen);
-	if (*out == NULL || *outlen > sizeof(alpn_protos) || *outlen <= 0)
-		return SSL_TLSEXT_ERR_NOACK;	/* can't happen */
-
-	if (retval == OPENSSL_NPN_NEGOTIATED)
-		return SSL_TLSEXT_ERR_OK;
-	else if (retval == OPENSSL_NPN_NO_OVERLAP)
-		return SSL_TLSEXT_ERR_NOACK;
-	else
-		return SSL_TLSEXT_ERR_NOACK;
-}
-
-
 /*
  * Set DH parameters for generating ephemeral DH keys.  The
  * DH parameters can take a long time to compute, so they must be
@@ -1425,9 +1350,9 @@ initialize_ecdh(SSL_CTX *context, bool isServerStart)
  *
  * ERR_get_error() is used by caller to get errcode to pass here.
  *
- * Some caution is needed here since ERR_reason_error_string will return NULL
- * if it doesn't recognize the error code, or (in OpenSSL >= 3) if the code
- * represents a system errno value.  We don't want to return NULL ever.
+ * Some caution is needed here since ERR_reason_error_string will
+ * return NULL if it doesn't recognize the error code.  We don't
+ * want to return NULL ever.
  */
 static const char *
 SSLerrmessage(unsigned long ecode)
@@ -1440,19 +1365,6 @@ SSLerrmessage(unsigned long ecode)
 	errreason = ERR_reason_error_string(ecode);
 	if (errreason != NULL)
 		return errreason;
-
-	/*
-	 * In OpenSSL 3.0.0 and later, ERR_reason_error_string randomly refuses to
-	 * map system errno values.  We can cover that shortcoming with this bit
-	 * of code.  Older OpenSSL versions don't have the ERR_SYSTEM_ERROR macro,
-	 * but that's okay because they don't have the shortcoming either.
-	 */
-#ifdef ERR_SYSTEM_ERROR
-	if (ERR_SYSTEM_ERROR(ecode))
-		return strerror(ERR_GET_REASON(ecode));
-#endif
-
-	/* No choice but to report the numeric ecode */
 	snprintf(errbuf, sizeof(errbuf), _("SSL error code %lu"), ecode);
 	return errbuf;
 }
@@ -1528,6 +1440,7 @@ be_tls_get_peer_serial(Port *port, char *ptr, size_t len)
 		ptr[0] = '\0';
 }
 
+#if defined(HAVE_X509_GET_SIGNATURE_NID) || defined(HAVE_X509_GET_SIGNATURE_INFO)
 char *
 be_tls_get_certificate_hash(Port *port, size_t *len)
 {
@@ -1586,6 +1499,7 @@ be_tls_get_certificate_hash(Port *port, size_t *len)
 
 	return cert_hash;
 }
+#endif
 
 /*
  * Convert an X509 subject name to a cstring.

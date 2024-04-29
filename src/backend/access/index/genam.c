@@ -3,7 +3,7 @@
  * genam.c
  *	  general index access method routines
  *
- * Portions Copyright (c) 1996-2024, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2023, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -20,6 +20,7 @@
 #include "postgres.h"
 
 #include "access/genam.h"
+#include "access/heapam.h"
 #include "access/relscan.h"
 #include "access/tableam.h"
 #include "access/transam.h"
@@ -29,11 +30,13 @@
 #include "storage/bufmgr.h"
 #include "storage/procarray.h"
 #include "utils/acl.h"
+#include "utils/builtins.h"
 #include "utils/lsyscache.h"
 #include "utils/rel.h"
 #include "utils/rls.h"
 #include "utils/ruleutils.h"
 #include "utils/snapmgr.h"
+#include "utils/syscache.h"
 
 
 /* ----------------------------------------------------------------
@@ -172,7 +175,7 @@ IndexScanEnd(IndexScanDesc scan)
  */
 char *
 BuildIndexValueDescription(Relation indexRelation,
-						   const Datum *values, const bool *isnull)
+						   Datum *values, bool *isnull)
 {
 	StringInfoData buf;
 	Form_pg_index idxrec;
@@ -650,10 +653,8 @@ systable_beginscan_ordered(Relation heapRelation,
 
 	/* REINDEX can probably be a hard error here ... */
 	if (ReindexIsProcessingIndex(RelationGetRelid(indexRelation)))
-		ereport(ERROR,
-				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("cannot access index \"%s\" while it is being reindexed",
-						RelationGetRelationName(indexRelation))));
+		elog(ERROR, "cannot do ordered scan on index \"%s\", because it is being reindexed",
+			 RelationGetRelationName(indexRelation));
 	/* ... but we only throw a warning about violating IgnoreSystemIndexes */
 	if (IgnoreSystemIndexes)
 		elog(WARNING, "using index \"%s\" despite IgnoreSystemIndexes",

@@ -5,7 +5,7 @@
  *	  Routines for CREATE and DROP FUNCTION commands and CREATE and DROP
  *	  CAST commands.
  *
- * Portions Copyright (c) 1996-2024, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2023, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -32,7 +32,9 @@
  */
 #include "postgres.h"
 
+#include "access/genam.h"
 #include "access/htup_details.h"
+#include "access/sysattr.h"
 #include "access/table.h"
 #include "catalog/catalog.h"
 #include "catalog/dependency.h"
@@ -45,9 +47,11 @@
 #include "catalog/pg_proc.h"
 #include "catalog/pg_transform.h"
 #include "catalog/pg_type.h"
+#include "commands/alter.h"
 #include "commands/defrem.h"
 #include "commands/extension.h"
 #include "commands/proclang.h"
+#include "executor/execdesc.h"
 #include "executor/executor.h"
 #include "executor/functions.h"
 #include "funcapi.h"
@@ -64,8 +68,10 @@
 #include "tcop/utility.h"
 #include "utils/acl.h"
 #include "utils/builtins.h"
+#include "utils/fmgroids.h"
 #include "utils/guc.h"
 #include "utils/lsyscache.h"
+#include "utils/memutils.h"
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
 #include "utils/syscache.h"
@@ -1444,13 +1450,9 @@ AlterFunction(ParseState *pstate, AlterFunctionStmt *stmt)
 
 		/* Add or replace dependency on support function */
 		if (OidIsValid(procForm->prosupport))
-		{
-			if (changeDependencyFor(ProcedureRelationId, funcOid,
-									ProcedureRelationId, procForm->prosupport,
-									newsupport) != 1)
-				elog(ERROR, "could not change support dependency for function %s",
-					 get_func_name(funcOid));
-		}
+			changeDependencyFor(ProcedureRelationId, funcOid,
+								ProcedureRelationId, procForm->prosupport,
+								newsupport);
 		else
 		{
 			ObjectAddress referenced;

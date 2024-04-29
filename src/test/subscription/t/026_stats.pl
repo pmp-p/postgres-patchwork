@@ -1,9 +1,9 @@
 
-# Copyright (c) 2021-2024, PostgreSQL Global Development Group
+# Copyright (c) 2021-2023, PostgreSQL Global Development Group
 
 # Tests for subscription stats.
 use strict;
-use warnings FATAL => 'all';
+use warnings;
 use PostgreSQL::Test::Cluster;
 use PostgreSQL::Test::Utils;
 use Test::More;
@@ -15,7 +15,7 @@ $node_publisher->start;
 
 # Create subscriber node.
 my $node_subscriber = PostgreSQL::Test::Cluster->new('subscriber');
-$node_subscriber->init;
+$node_subscriber->init(allows_streaming => 'logical');
 $node_subscriber->start;
 
 
@@ -271,7 +271,7 @@ is( $node_subscriber->safe_psql(
 my $sub2_oid = $node_subscriber->safe_psql($db,
 	qq(SELECT oid FROM pg_subscription WHERE subname = '$sub2_name'));
 
-# Disassociate the subscription 2 from its replication slot and drop it
+# Diassociate the subscription 2 from its replication slot and drop it
 $node_subscriber->safe_psql(
 	$db,
 	qq(

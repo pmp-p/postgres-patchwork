@@ -3,7 +3,7 @@
  * partdesc.c
  *		Support routines for manipulating partition descriptors
  *
- * Portions Copyright (c) 1996-2024, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2023, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -21,14 +21,16 @@
 #include "catalog/pg_inherits.h"
 #include "partitioning/partbounds.h"
 #include "partitioning/partdesc.h"
+#include "storage/bufmgr.h"
+#include "storage/sinval.h"
 #include "utils/builtins.h"
 #include "utils/fmgroids.h"
 #include "utils/hsearch.h"
+#include "utils/inval.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
 #include "utils/partcache.h"
 #include "utils/rel.h"
-#include "utils/snapmgr.h"
 #include "utils/syscache.h"
 
 typedef struct PartitionDirectoryData
@@ -181,7 +183,7 @@ RelationBuildPartitionDesc(Relation rel, bool omit_detached)
 		PartitionBoundSpec *boundspec = NULL;
 
 		/* Try fetching the tuple from the catcache, for speed. */
-		tuple = SearchSysCache1(RELOID, ObjectIdGetDatum(inhrelid));
+		tuple = SearchSysCache1(RELOID, inhrelid);
 		if (HeapTupleIsValid(tuple))
 		{
 			Datum		datum;

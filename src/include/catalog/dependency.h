@@ -4,7 +4,7 @@
  *	  Routines to support inter-object dependencies.
  *
  *
- * Portions Copyright (c) 1996-2024, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2023, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/catalog/dependency.h
@@ -36,7 +36,7 @@ typedef enum DependencyType
 	DEPENDENCY_PARTITION_PRI = 'P',
 	DEPENDENCY_PARTITION_SEC = 'S',
 	DEPENDENCY_EXTENSION = 'e',
-	DEPENDENCY_AUTO_EXTENSION = 'x',
+	DEPENDENCY_AUTO_EXTENSION = 'x'
 } DependencyType;
 
 /*
@@ -75,11 +75,62 @@ typedef enum SharedDependencyType
 	SHARED_DEPENDENCY_ACL = 'a',
 	SHARED_DEPENDENCY_POLICY = 'r',
 	SHARED_DEPENDENCY_TABLESPACE = 't',
-	SHARED_DEPENDENCY_INVALID = 0,
+	SHARED_DEPENDENCY_INVALID = 0
 } SharedDependencyType;
 
 /* expansible list of ObjectAddresses (private in dependency.c) */
 typedef struct ObjectAddresses ObjectAddresses;
+
+/*
+ * This enum covers all system catalogs whose OIDs can appear in
+ * pg_depend.classId or pg_shdepend.classId.  Keep object_classes[] in sync.
+ */
+typedef enum ObjectClass
+{
+	OCLASS_CLASS,				/* pg_class */
+	OCLASS_PROC,				/* pg_proc */
+	OCLASS_TYPE,				/* pg_type */
+	OCLASS_CAST,				/* pg_cast */
+	OCLASS_COLLATION,			/* pg_collation */
+	OCLASS_CONSTRAINT,			/* pg_constraint */
+	OCLASS_CONVERSION,			/* pg_conversion */
+	OCLASS_DEFAULT,				/* pg_attrdef */
+	OCLASS_LANGUAGE,			/* pg_language */
+	OCLASS_LARGEOBJECT,			/* pg_largeobject */
+	OCLASS_OPERATOR,			/* pg_operator */
+	OCLASS_OPCLASS,				/* pg_opclass */
+	OCLASS_OPFAMILY,			/* pg_opfamily */
+	OCLASS_AM,					/* pg_am */
+	OCLASS_AMOP,				/* pg_amop */
+	OCLASS_AMPROC,				/* pg_amproc */
+	OCLASS_REWRITE,				/* pg_rewrite */
+	OCLASS_TRIGGER,				/* pg_trigger */
+	OCLASS_SCHEMA,				/* pg_namespace */
+	OCLASS_STATISTIC_EXT,		/* pg_statistic_ext */
+	OCLASS_TSPARSER,			/* pg_ts_parser */
+	OCLASS_TSDICT,				/* pg_ts_dict */
+	OCLASS_TSTEMPLATE,			/* pg_ts_template */
+	OCLASS_TSCONFIG,			/* pg_ts_config */
+	OCLASS_ROLE,				/* pg_authid */
+	OCLASS_ROLE_MEMBERSHIP,		/* pg_auth_members */
+	OCLASS_DATABASE,			/* pg_database */
+	OCLASS_TBLSPACE,			/* pg_tablespace */
+	OCLASS_FDW,					/* pg_foreign_data_wrapper */
+	OCLASS_FOREIGN_SERVER,		/* pg_foreign_server */
+	OCLASS_USER_MAPPING,		/* pg_user_mapping */
+	OCLASS_DEFACL,				/* pg_default_acl */
+	OCLASS_EXTENSION,			/* pg_extension */
+	OCLASS_EVENT_TRIGGER,		/* pg_event_trigger */
+	OCLASS_PARAMETER_ACL,		/* pg_parameter_acl */
+	OCLASS_POLICY,				/* pg_policy */
+	OCLASS_PUBLICATION,			/* pg_publication */
+	OCLASS_PUBLICATION_NAMESPACE,	/* pg_publication_namespace */
+	OCLASS_PUBLICATION_REL,		/* pg_publication_rel */
+	OCLASS_SUBSCRIPTION,		/* pg_subscription */
+	OCLASS_TRANSFORM			/* pg_transform */
+} ObjectClass;
+
+#define LAST_OCLASS		OCLASS_TRANSFORM
 
 /* flag bits for performDeletion/performMultipleDeletions: */
 #define PERFORM_DELETION_INTERNAL			0x0001	/* internal action */
@@ -112,6 +163,8 @@ extern void recordDependencyOnSingleRelExpr(const ObjectAddress *depender,
 											DependencyType behavior,
 											DependencyType self_behavior,
 											bool reverse_self);
+
+extern ObjectClass getObjectClass(const ObjectAddress *object);
 
 extern ObjectAddresses *new_object_addresses(void);
 

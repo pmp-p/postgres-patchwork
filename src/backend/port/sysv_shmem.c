@@ -9,7 +9,7 @@
  * exist, though, because mmap'd shmem provides no way to find out how
  * many processes are attached, which we need for interlocking purposes.
  *
- * Portions Copyright (c) 1996-2024, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2023, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -34,7 +34,6 @@
 #include "storage/fd.h"
 #include "storage/ipc.h"
 #include "storage/pg_shmem.h"
-#include "utils/guc.h"
 #include "utils/guc_hooks.h"
 #include "utils/pidfile.h"
 
@@ -87,7 +86,7 @@ typedef enum
 	SHMSTATE_ATTACHED,			/* pertinent to DataDir, has attached PIDs */
 	SHMSTATE_ENOENT,			/* no segment of that ID */
 	SHMSTATE_FOREIGN,			/* exists, but not pertinent to DataDir */
-	SHMSTATE_UNATTACHED,		/* pertinent to DataDir, no attached PIDs */
+	SHMSTATE_UNATTACHED			/* pertinent to DataDir, no attached PIDs */
 } IpcMemoryState;
 
 
@@ -628,14 +627,6 @@ CreateAnonymousSegment(Size *size)
 	}
 #endif
 
-	/*
-	 * Report whether huge pages are in use.  This needs to be tracked before
-	 * the second mmap() call if attempting to use huge pages failed
-	 * previously.
-	 */
-	SetConfigOption("huge_pages_status", (ptr == MAP_FAILED) ? "off" : "on",
-					PGC_INTERNAL, PGC_S_DYNAMIC_DEFAULT);
-
 	if (ptr == MAP_FAILED && huge_pages != HUGE_PAGES_ON)
 	{
 		/*
@@ -746,13 +737,7 @@ PGSharedMemoryCreate(Size size,
 		sysvsize = sizeof(PGShmemHeader);
 	}
 	else
-	{
 		sysvsize = size;
-
-		/* huge pages are only available with mmap */
-		SetConfigOption("huge_pages_status", "off",
-						PGC_INTERNAL, PGC_S_DYNAMIC_DEFAULT);
-	}
 
 	/*
 	 * Loop till we find a free IPC key.  Trust CreateDataDirLockFile() to

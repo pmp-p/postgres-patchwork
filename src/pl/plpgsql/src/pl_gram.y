@@ -3,7 +3,7 @@
  *
  * pl_gram.y			- Parser for the PL/pgSQL procedural language
  *
- * Portions Copyright (c) 1996-2024, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2023, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -66,6 +66,7 @@ static	PLpgSQL_expr	*read_sql_construct(int until,
 											RawParseMode parsemode,
 											bool isexpression,
 											bool valid_sql,
+											bool trim,
 											int *startloc,
 											int *endtoken);
 static	PLpgSQL_expr	*read_sql_expression(int until,
@@ -757,9 +758,8 @@ decl_const		:
 decl_datatype	:
 					{
 						/*
-						 * If there's a lookahead token, read_datatype() will
-						 * consume it, and then we must tell bison to forget
-						 * it.
+						 * If there's a lookahead token, read_datatype
+						 * should consume it.
 						 */
 						$$ = read_datatype(yychar);
 						yyclearin;
@@ -894,7 +894,7 @@ stmt_perform	: K_PERFORM
 						 */
 						new->expr = read_sql_construct(';', 0, 0, ";",
 													   RAW_PARSE_DEFAULT,
-													   false, false,
+													   false, false, true,
 													   &startloc, NULL);
 						/* overwrite "perform" ... */
 						memcpy(new->expr->query, " SELECT", 7);
@@ -980,7 +980,7 @@ stmt_assign		: T_DATUM
 						plpgsql_push_back_token(T_DATUM);
 						new->expr = read_sql_construct(';', 0, 0, ";",
 													   pmode,
-													   false, true,
+													   false, true, true,
 													   NULL, NULL);
 
 						$$ = (PLpgSQL_stmt *) new;
@@ -1473,6 +1473,7 @@ for_control		: for_variable K_IN
 													   RAW_PARSE_DEFAULT,
 													   true,
 													   false,
+													   true,
 													   &expr1loc,
 													   &tok);
 
@@ -1877,7 +1878,7 @@ stmt_raise		: K_RAISE
 									expr = read_sql_construct(',', ';', K_USING,
 															  ", or ; or USING",
 															  RAW_PARSE_PLPGSQL_EXPR,
-															  true, true,
+															  true, true, true,
 															  NULL, &tok);
 									new->params = lappend(new->params, expr);
 								}
@@ -2014,7 +2015,7 @@ stmt_dynexecute : K_EXECUTE
 						expr = read_sql_construct(K_INTO, K_USING, ';',
 												  "INTO or USING or ;",
 												  RAW_PARSE_PLPGSQL_EXPR,
-												  true, true,
+												  true, true, true,
 												  NULL, &endtoken);
 
 						new = palloc(sizeof(PLpgSQL_stmt_dynexecute));
@@ -2053,7 +2054,7 @@ stmt_dynexecute : K_EXECUTE
 									expr = read_sql_construct(',', ';', K_INTO,
 															  ", or ; or INTO",
 															  RAW_PARSE_PLPGSQL_EXPR,
-															  true, true,
+															  true, true, true,
 															  NULL, &endtoken);
 									new->params = lappend(new->params, expr);
 								} while (endtoken == ',');
@@ -2638,7 +2639,7 @@ read_sql_expression(int until, const char *expected)
 {
 	return read_sql_construct(until, 0, 0, expected,
 							  RAW_PARSE_PLPGSQL_EXPR,
-							  true, true, NULL, NULL);
+							  true, true, true, NULL, NULL);
 }
 
 /* Convenience routine to read an expression with two possible terminators */
@@ -2648,7 +2649,7 @@ read_sql_expression2(int until, int until2, const char *expected,
 {
 	return read_sql_construct(until, until2, 0, expected,
 							  RAW_PARSE_PLPGSQL_EXPR,
-							  true, true, NULL, endtoken);
+							  true, true, true, NULL, endtoken);
 }
 
 /* Convenience routine to read a SQL statement that must end with ';' */
@@ -2657,7 +2658,7 @@ read_sql_stmt(void)
 {
 	return read_sql_construct(';', 0, 0, ";",
 							  RAW_PARSE_DEFAULT,
-							  false, true, NULL, NULL);
+							  false, true, true, NULL, NULL);
 }
 
 /*
@@ -2670,6 +2671,7 @@ read_sql_stmt(void)
  * parsemode:	raw_parser() mode to use
  * isexpression: whether to say we're reading an "expression" or a "statement"
  * valid_sql:   whether to check the syntax of the expr
+ * trim:		trim trailing whitespace
  * startloc:	if not NULL, location of first token is stored at *startloc
  * endtoken:	if not NULL, ending token is stored at *endtoken
  *				(this is only interesting if until2 or until3 isn't zero)
@@ -2682,6 +2684,7 @@ read_sql_construct(int until,
 				   RawParseMode parsemode,
 				   bool isexpression,
 				   bool valid_sql,
+				   bool trim,
 				   int *startloc,
 				   int *endtoken)
 {
@@ -2689,7 +2692,6 @@ read_sql_construct(int until,
 	StringInfoData ds;
 	IdentifierLookup save_IdentifierLookup;
 	int			startlocation = -1;
-	int			endlocation = -1;
 	int			parenlevel = 0;
 	PLpgSQL_expr *expr;
 
@@ -2740,8 +2742,6 @@ read_sql_construct(int until,
 								expected),
 						 parser_errposition(yylloc)));
 		}
-		/* Remember end+1 location of last accepted token */
-		endlocation = yylloc + plpgsql_token_length();
 	}
 
 	plpgsql_IdentifierLookup = save_IdentifierLookup;
@@ -2752,7 +2752,7 @@ read_sql_construct(int until,
 		*endtoken = tok;
 
 	/* give helpful complaint about empty input */
-	if (startlocation >= endlocation)
+	if (startlocation >= yylloc)
 	{
 		if (isexpression)
 			yyerror("missing expression");
@@ -2760,14 +2760,14 @@ read_sql_construct(int until,
 			yyerror("missing SQL statement");
 	}
 
-	/*
-	 * We save only the text from startlocation to endlocation-1.  This
-	 * suppresses the "until" token as well as any whitespace or comments
-	 * following the last accepted token.  (We used to strip such trailing
-	 * whitespace by hand, but that causes problems if there's a "-- comment"
-	 * in front of said whitespace.)
-	 */
-	plpgsql_append_source_text(&ds, startlocation, endlocation);
+	plpgsql_append_source_text(&ds, startlocation, yylloc);
+
+	/* trim any trailing whitespace, for neatness */
+	if (trim)
+	{
+		while (ds.len > 0 && scanner_isspace(ds.data[ds.len - 1]))
+			ds.data[--ds.len] = '\0';
+	}
 
 	expr = palloc0(sizeof(PLpgSQL_expr));
 	expr->query = pstrdup(ds.data);
@@ -2784,17 +2784,13 @@ read_sql_construct(int until,
 	return expr;
 }
 
-/*
- * Read a datatype declaration, consuming the current lookahead token if any.
- * Returns a PLpgSQL_type struct.
- */
 static PLpgSQL_type *
 read_datatype(int tok)
 {
 	StringInfoData ds;
 	char	   *type_name;
 	int			startlocation;
-	PLpgSQL_type *result = NULL;
+	PLpgSQL_type *result;
 	int			parenlevel = 0;
 
 	/* Should only be called while parsing DECLARE sections */
@@ -2804,12 +2800,11 @@ read_datatype(int tok)
 	if (tok == YYEMPTY)
 		tok = yylex();
 
-	/* The current token is the start of what we'll pass to parse_datatype */
 	startlocation = yylloc;
 
 	/*
-	 * If we have a simple or composite identifier, check for %TYPE and
-	 * %ROWTYPE constructs.
+	 * If we have a simple or composite identifier, check for %TYPE
+	 * and %ROWTYPE constructs.
 	 */
 	if (tok == T_WORD)
 	{
@@ -2821,10 +2816,18 @@ read_datatype(int tok)
 			tok = yylex();
 			if (tok_is_keyword(tok, &yylval,
 							   K_TYPE, "type"))
+			{
 				result = plpgsql_parse_wordtype(dtname);
+				if (result)
+					return result;
+			}
 			else if (tok_is_keyword(tok, &yylval,
 									K_ROWTYPE, "rowtype"))
+			{
 				result = plpgsql_parse_wordrowtype(dtname);
+				if (result)
+					return result;
+			}
 		}
 	}
 	else if (plpgsql_token_is_unreserved_keyword(tok))
@@ -2837,10 +2840,18 @@ read_datatype(int tok)
 			tok = yylex();
 			if (tok_is_keyword(tok, &yylval,
 							   K_TYPE, "type"))
+			{
 				result = plpgsql_parse_wordtype(dtname);
+				if (result)
+					return result;
+			}
 			else if (tok_is_keyword(tok, &yylval,
 									K_ROWTYPE, "rowtype"))
+			{
 				result = plpgsql_parse_wordrowtype(dtname);
+				if (result)
+					return result;
+			}
 		}
 	}
 	else if (tok == T_CWORD)
@@ -2853,56 +2864,21 @@ read_datatype(int tok)
 			tok = yylex();
 			if (tok_is_keyword(tok, &yylval,
 							   K_TYPE, "type"))
+			{
 				result = plpgsql_parse_cwordtype(dtnames);
+				if (result)
+					return result;
+			}
 			else if (tok_is_keyword(tok, &yylval,
 									K_ROWTYPE, "rowtype"))
+			{
 				result = plpgsql_parse_cwordrowtype(dtnames);
+				if (result)
+					return result;
+			}
 		}
 	}
 
-	/*
-	 * If we recognized a %TYPE or %ROWTYPE construct, see if it is followed
-	 * by array decoration: [ ARRAY ] [ '[' [ iconst ] ']' [ ... ] ]
-	 *
-	 * Like the core parser, we ignore the specific numbers and sizes of
-	 * dimensions; arrays of different dimensionality are still the same type
-	 * in Postgres.
-	 */
-	if (result)
-	{
-		bool		is_array = false;
-
-		tok = yylex();
-		if (tok_is_keyword(tok, &yylval,
-						   K_ARRAY, "array"))
-		{
-			is_array = true;
-			tok = yylex();
-		}
-		while (tok == '[')
-		{
-			is_array = true;
-			tok = yylex();
-			if (tok == ICONST)
-				tok = yylex();
-			if (tok != ']')
-				yyerror("syntax error, expected \"]\"");
-			tok = yylex();
-		}
-		plpgsql_push_back_token(tok);
-
-		if (is_array)
-			result = plpgsql_build_datatype_arrayof(result);
-
-		return result;
-	}
-
-	/*
-	 * Not %TYPE or %ROWTYPE, so scan to the end of the datatype declaration,
-	 * which could include typmod or array decoration.  We are not very picky
-	 * here, instead relying on parse_datatype to complain about garbage.  But
-	 * we must count parens to handle typmods within cursor_arg correctly.
-	 */
 	while (tok != ';')
 	{
 		if (tok == 0)
@@ -3932,12 +3908,16 @@ read_cursor_args(PLpgSQL_var *cursor, int until)
 		 * Read the value expression. To provide the user with meaningful
 		 * parse error positions, we check the syntax immediately, instead of
 		 * checking the final expression that may have the arguments
-		 * reordered.
+		 * reordered. Trailing whitespace must not be trimmed, because
+		 * otherwise input of the form (param -- comment\n, param) would be
+		 * translated into a form where the second parameter is commented
+		 * out.
 		 */
 		item = read_sql_construct(',', ')', 0,
 								  ",\" or \")",
 								  RAW_PARSE_PLPGSQL_EXPR,
 								  true, true,
+								  false, /* do not trim */
 								  NULL, &endtoken);
 
 		argv[argpos] = item->query;

@@ -3,7 +3,7 @@
  * catcache.c
  *	  System catalog cache for tuples matching a key.
  *
- * Portions Copyright (c) 1996-2024, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2023, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -17,9 +17,11 @@
 #include "access/genam.h"
 #include "access/heaptoast.h"
 #include "access/relscan.h"
+#include "access/sysattr.h"
 #include "access/table.h"
 #include "access/xact.h"
 #include "catalog/pg_collation.h"
+#include "catalog/pg_operator.h"
 #include "catalog/pg_type.h"
 #include "common/hashfn.h"
 #include "common/pg_prng.h"
@@ -30,13 +32,12 @@
 #endif
 #include "storage/lmgr.h"
 #include "utils/builtins.h"
-#include "utils/catcache.h"
 #include "utils/datum.h"
 #include "utils/fmgroids.h"
 #include "utils/inval.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
-#include "utils/resowner.h"
+#include "utils/resowner_private.h"
 #include "utils/syscache.h"
 
 
@@ -88,16 +89,12 @@ static void CatCachePrintStats(int code, Datum arg);
 #endif
 static void CatCacheRemoveCTup(CatCache *cache, CatCTup *ct);
 static void CatCacheRemoveCList(CatCache *cache, CatCList *cl);
-static void RehashCatCache(CatCache *cp);
-static void RehashCatCacheLists(CatCache *cp);
 static void CatalogCacheInitializeCache(CatCache *cache);
 static CatCTup *CatalogCacheCreateEntry(CatCache *cache,
 										HeapTuple ntp, SysScanDesc scandesc,
 										Datum *arguments,
 										uint32 hashValue, Index hashIndex);
 
-static void ReleaseCatCacheWithOwner(HeapTuple tuple, ResourceOwner resowner);
-static void ReleaseCatCacheListWithOwner(CatCList *list, ResourceOwner resowner);
 static void CatCacheFreeKeys(TupleDesc tupdesc, int nkeys, int *attnos,
 							 Datum *keys);
 static void CatCacheCopyKeys(TupleDesc tupdesc, int nkeys, int *attnos,
@@ -107,56 +104,6 @@ static void CatCacheCopyKeys(TupleDesc tupdesc, int nkeys, int *attnos,
 /*
  *					internal support functions
  */
-
-/* ResourceOwner callbacks to hold catcache references */
-
-static void ResOwnerReleaseCatCache(Datum res);
-static char *ResOwnerPrintCatCache(Datum res);
-static void ResOwnerReleaseCatCacheList(Datum res);
-static char *ResOwnerPrintCatCacheList(Datum res);
-
-static const ResourceOwnerDesc catcache_resowner_desc =
-{
-	/* catcache references */
-	.name = "catcache reference",
-	.release_phase = RESOURCE_RELEASE_AFTER_LOCKS,
-	.release_priority = RELEASE_PRIO_CATCACHE_REFS,
-	.ReleaseResource = ResOwnerReleaseCatCache,
-	.DebugPrint = ResOwnerPrintCatCache
-};
-
-static const ResourceOwnerDesc catlistref_resowner_desc =
-{
-	/* catcache-list pins */
-	.name = "catcache list reference",
-	.release_phase = RESOURCE_RELEASE_AFTER_LOCKS,
-	.release_priority = RELEASE_PRIO_CATCACHE_LIST_REFS,
-	.ReleaseResource = ResOwnerReleaseCatCacheList,
-	.DebugPrint = ResOwnerPrintCatCacheList
-};
-
-/* Convenience wrappers over ResourceOwnerRemember/Forget */
-static inline void
-ResourceOwnerRememberCatCacheRef(ResourceOwner owner, HeapTuple tuple)
-{
-	ResourceOwnerRemember(owner, PointerGetDatum(tuple), &catcache_resowner_desc);
-}
-static inline void
-ResourceOwnerForgetCatCacheRef(ResourceOwner owner, HeapTuple tuple)
-{
-	ResourceOwnerForget(owner, PointerGetDatum(tuple), &catcache_resowner_desc);
-}
-static inline void
-ResourceOwnerRememberCatCacheListRef(ResourceOwner owner, CatCList *list)
-{
-	ResourceOwnerRemember(owner, PointerGetDatum(list), &catlistref_resowner_desc);
-}
-static inline void
-ResourceOwnerForgetCatCacheListRef(ResourceOwner owner, CatCList *list)
-{
-	ResourceOwnerForget(owner, PointerGetDatum(list), &catlistref_resowner_desc);
-}
-
 
 /*
  * Hash and equality functions for system types that are used as cache key
@@ -446,7 +393,6 @@ CatCachePrintStats(int code, Datum arg)
 	long		cc_neg_hits = 0;
 	long		cc_newloads = 0;
 	long		cc_invals = 0;
-	long		cc_nlists = 0;
 	long		cc_lsearches = 0;
 	long		cc_lhits = 0;
 
@@ -456,7 +402,7 @@ CatCachePrintStats(int code, Datum arg)
 
 		if (cache->cc_ntup == 0 && cache->cc_searches == 0)
 			continue;			/* don't print unused caches */
-		elog(DEBUG2, "catcache %s/%u: %d tup, %ld srch, %ld+%ld=%ld hits, %ld+%ld=%ld loads, %ld invals, %d lists, %ld lsrch, %ld lhits",
+		elog(DEBUG2, "catcache %s/%u: %d tup, %ld srch, %ld+%ld=%ld hits, %ld+%ld=%ld loads, %ld invals, %ld lsrch, %ld lhits",
 			 cache->cc_relname,
 			 cache->cc_indexoid,
 			 cache->cc_ntup,
@@ -468,7 +414,6 @@ CatCachePrintStats(int code, Datum arg)
 			 cache->cc_searches - cache->cc_hits - cache->cc_neg_hits - cache->cc_newloads,
 			 cache->cc_searches - cache->cc_hits - cache->cc_neg_hits,
 			 cache->cc_invals,
-			 cache->cc_nlist,
 			 cache->cc_lsearches,
 			 cache->cc_lhits);
 		cc_searches += cache->cc_searches;
@@ -476,11 +421,10 @@ CatCachePrintStats(int code, Datum arg)
 		cc_neg_hits += cache->cc_neg_hits;
 		cc_newloads += cache->cc_newloads;
 		cc_invals += cache->cc_invals;
-		cc_nlists += cache->cc_nlist;
 		cc_lsearches += cache->cc_lsearches;
 		cc_lhits += cache->cc_lhits;
 	}
-	elog(DEBUG2, "catcache totals: %d tup, %ld srch, %ld+%ld=%ld hits, %ld+%ld=%ld loads, %ld invals, %ld lists, %ld lsrch, %ld lhits",
+	elog(DEBUG2, "catcache totals: %d tup, %ld srch, %ld+%ld=%ld hits, %ld+%ld=%ld loads, %ld invals, %ld lsrch, %ld lhits",
 		 CacheHdr->ch_ntup,
 		 cc_searches,
 		 cc_hits,
@@ -490,7 +434,6 @@ CatCachePrintStats(int code, Datum arg)
 		 cc_searches - cc_hits - cc_neg_hits - cc_newloads,
 		 cc_searches - cc_hits - cc_neg_hits,
 		 cc_invals,
-		 cc_nlists,
 		 cc_lsearches,
 		 cc_lhits);
 }
@@ -579,8 +522,6 @@ CatCacheRemoveCList(CatCache *cache, CatCList *cl)
 					 cache->cc_keyno, cl->keys);
 
 	pfree(cl);
-
-	--cache->cc_nlist;
 }
 
 
@@ -619,19 +560,14 @@ CatCacheInvalidate(CatCache *cache, uint32 hashValue)
 	 * Invalidate *all* CatCLists in this cache; it's too hard to tell which
 	 * searches might still be correct, so just zap 'em all.
 	 */
-	for (int i = 0; i < cache->cc_nlbuckets; i++)
+	dlist_foreach_modify(iter, &cache->cc_lists)
 	{
-		dlist_head *bucket = &cache->cc_lbucket[i];
+		CatCList   *cl = dlist_container(CatCList, cache_elem, iter.cur);
 
-		dlist_foreach_modify(iter, bucket)
-		{
-			CatCList   *cl = dlist_container(CatCList, cache_elem, iter.cur);
-
-			if (cl->refcount > 0)
-				cl->dead = true;
-			else
-				CatCacheRemoveCList(cache, cl);
-		}
+		if (cl->refcount > 0)
+			cl->dead = true;
+		else
+			CatCacheRemoveCList(cache, cl);
 	}
 
 	/*
@@ -704,19 +640,14 @@ ResetCatalogCache(CatCache *cache)
 	int			i;
 
 	/* Remove each list in this cache, or at least mark it dead */
-	for (i = 0; i < cache->cc_nlbuckets; i++)
+	dlist_foreach_modify(iter, &cache->cc_lists)
 	{
-		dlist_head *bucket = &cache->cc_lbucket[i];
+		CatCList   *cl = dlist_container(CatCList, cache_elem, iter.cur);
 
-		dlist_foreach_modify(iter, bucket)
-		{
-			CatCList   *cl = dlist_container(CatCList, cache_elem, iter.cur);
-
-			if (cl->refcount > 0)
-				cl->dead = true;
-			else
-				CatCacheRemoveCList(cache, cl);
-		}
+		if (cl->refcount > 0)
+			cl->dead = true;
+		else
+			CatCacheRemoveCList(cache, cl);
 	}
 
 	/* Remove each tuple in this cache, or at least mark it dead */
@@ -881,12 +812,6 @@ InitCatCache(int id,
 	cp->cc_bucket = palloc0(nbuckets * sizeof(dlist_head));
 
 	/*
-	 * Many catcaches never receive any list searches.  Therefore, we don't
-	 * allocate the cc_lbuckets till we get a list search.
-	 */
-	cp->cc_lbucket = NULL;
-
-	/*
 	 * initialize the cache's relation information for the relation
 	 * corresponding to this cache, and initialize some of the new cache's
 	 * other internal fields.  But don't open the relation yet.
@@ -898,15 +823,10 @@ InitCatCache(int id,
 	cp->cc_relisshared = false; /* temporary */
 	cp->cc_tupdesc = (TupleDesc) NULL;
 	cp->cc_ntup = 0;
-	cp->cc_nlist = 0;
 	cp->cc_nbuckets = nbuckets;
-	cp->cc_nlbuckets = 0;
 	cp->cc_nkeys = nkeys;
 	for (i = 0; i < nkeys; ++i)
-	{
-		Assert(AttributeNumberIsValid(key[i]));
 		cp->cc_keyno[i] = key[i];
-	}
 
 	/*
 	 * new cache is initialized as far as we can go for now. print some
@@ -963,44 +883,6 @@ RehashCatCache(CatCache *cp)
 	pfree(cp->cc_bucket);
 	cp->cc_nbuckets = newnbuckets;
 	cp->cc_bucket = newbucket;
-}
-
-/*
- * Enlarge a catcache's list storage, doubling the number of buckets.
- */
-static void
-RehashCatCacheLists(CatCache *cp)
-{
-	dlist_head *newbucket;
-	int			newnbuckets;
-	int			i;
-
-	elog(DEBUG1, "rehashing catalog cache id %d for %s; %d lists, %d buckets",
-		 cp->id, cp->cc_relname, cp->cc_nlist, cp->cc_nlbuckets);
-
-	/* Allocate a new, larger, hash table. */
-	newnbuckets = cp->cc_nlbuckets * 2;
-	newbucket = (dlist_head *) MemoryContextAllocZero(CacheMemoryContext, newnbuckets * sizeof(dlist_head));
-
-	/* Move all entries from old hash table to new. */
-	for (i = 0; i < cp->cc_nlbuckets; i++)
-	{
-		dlist_mutable_iter iter;
-
-		dlist_foreach_modify(iter, &cp->cc_lbucket[i])
-		{
-			CatCList   *cl = dlist_container(CatCList, cache_elem, iter.cur);
-			int			hashIndex = HASH_INDEX(cl->hash_value, newnbuckets);
-
-			dlist_delete(iter.cur);
-			dlist_push_head(&newbucket[hashIndex], &cl->cache_elem);
-		}
-	}
-
-	/* Switch to the new array. */
-	pfree(cp->cc_lbucket);
-	cp->cc_nlbuckets = newnbuckets;
-	cp->cc_lbucket = newbucket;
 }
 
 /*
@@ -1384,7 +1266,7 @@ SearchCatCacheInternal(CatCache *cache,
 		 */
 		if (!ct->negative)
 		{
-			ResourceOwnerEnlarge(CurrentResourceOwner);
+			ResourceOwnerEnlargeCatCacheRefs(CurrentResourceOwner);
 			ct->refcount++;
 			ResourceOwnerRememberCatCacheRef(CurrentResourceOwner, &ct->tuple);
 
@@ -1501,7 +1383,7 @@ SearchCatCacheMiss(CatCache *cache,
 				break;
 			}
 			/* immediately set the refcount to 1 */
-			ResourceOwnerEnlarge(CurrentResourceOwner);
+			ResourceOwnerEnlargeCatCacheRefs(CurrentResourceOwner);
 			ct->refcount++;
 			ResourceOwnerRememberCatCacheRef(CurrentResourceOwner, &ct->tuple);
 			break;				/* assume only one match */
@@ -1572,12 +1454,6 @@ SearchCatCacheMiss(CatCache *cache,
 void
 ReleaseCatCache(HeapTuple tuple)
 {
-	ReleaseCatCacheWithOwner(tuple, CurrentResourceOwner);
-}
-
-static void
-ReleaseCatCacheWithOwner(HeapTuple tuple, ResourceOwner resowner)
-{
 	CatCTup    *ct = (CatCTup *) (((char *) tuple) -
 								  offsetof(CatCTup, tuple));
 
@@ -1586,8 +1462,7 @@ ReleaseCatCacheWithOwner(HeapTuple tuple, ResourceOwner resowner)
 	Assert(ct->refcount > 0);
 
 	ct->refcount--;
-	if (resowner)
-		ResourceOwnerForgetCatCacheRef(CurrentResourceOwner, &ct->tuple);
+	ResourceOwnerForgetCatCacheRef(CurrentResourceOwner, &ct->tuple);
 
 	if (
 #ifndef CATCACHE_FORCE_RELEASE
@@ -1652,9 +1527,7 @@ SearchCatCacheList(CatCache *cache,
 	Datum		v4 = 0;			/* dummy last-column value */
 	Datum		arguments[CATCACHE_MAXKEYS];
 	uint32		lHashValue;
-	Index		lHashIndex;
 	dlist_iter	iter;
-	dlist_head *lbucket;
 	CatCList   *cl;
 	CatCTup    *ct;
 	List	   *volatile ctlist;
@@ -1668,7 +1541,7 @@ SearchCatCacheList(CatCache *cache,
 	/*
 	 * one-time startup overhead for each cache
 	 */
-	if (unlikely(cache->cc_tupdesc == NULL))
+	if (cache->cc_tupdesc == NULL)
 		CatalogCacheInitializeCache(cache);
 
 	Assert(nkeys > 0 && nkeys < cache->cc_nkeys);
@@ -1684,36 +1557,11 @@ SearchCatCacheList(CatCache *cache,
 	arguments[3] = v4;
 
 	/*
-	 * If we haven't previously done a list search in this cache, create the
-	 * bucket header array; otherwise, consider whether it's time to enlarge
-	 * it.
-	 */
-	if (cache->cc_lbucket == NULL)
-	{
-		/* Arbitrary initial size --- must be a power of 2 */
-		int			nbuckets = 16;
-
-		cache->cc_lbucket = (dlist_head *)
-			MemoryContextAllocZero(CacheMemoryContext,
-								   nbuckets * sizeof(dlist_head));
-		/* Don't set cc_nlbuckets if we get OOM allocating cc_lbucket */
-		cache->cc_nlbuckets = nbuckets;
-	}
-	else
-	{
-		/*
-		 * If the hash table has become too full, enlarge the buckets array.
-		 * Quite arbitrarily, we enlarge when fill factor > 2.
-		 */
-		if (cache->cc_nlist > cache->cc_nlbuckets * 2)
-			RehashCatCacheLists(cache);
-	}
-
-	/*
-	 * Find the hash bucket in which to look for the CatCList.
+	 * compute a hash value of the given keys for faster search.  We don't
+	 * presently divide the CatCList items into buckets, but this still lets
+	 * us skip non-matching items quickly most of the time.
 	 */
 	lHashValue = CatalogCacheComputeHashValue(cache, nkeys, v1, v2, v3, v4);
-	lHashIndex = HASH_INDEX(lHashValue, cache->cc_nlbuckets);
 
 	/*
 	 * scan the items until we find a match or exhaust our list
@@ -1721,8 +1569,7 @@ SearchCatCacheList(CatCache *cache,
 	 * Note: it's okay to use dlist_foreach here, even though we modify the
 	 * dlist within the loop, because we don't continue the loop afterwards.
 	 */
-	lbucket = &cache->cc_lbucket[lHashIndex];
-	dlist_foreach(iter, lbucket)
+	dlist_foreach(iter, &cache->cc_lists)
 	{
 		cl = dlist_container(CatCList, cache_elem, iter.cur);
 
@@ -1742,16 +1589,16 @@ SearchCatCacheList(CatCache *cache,
 			continue;
 
 		/*
-		 * We found a matching list.  Move the list to the front of the list
-		 * for its hashbucket, so as to speed subsequent searches.  (We do not
+		 * We found a matching list.  Move the list to the front of the
+		 * cache's list-of-lists, to speed subsequent searches.  (We do not
 		 * move the members to the fronts of their hashbucket lists, however,
 		 * since there's no point in that unless they are searched for
 		 * individually.)
 		 */
-		dlist_move_head(lbucket, &cl->cache_elem);
+		dlist_move_head(&cache->cc_lists, &cl->cache_elem);
 
 		/* Bump the list's refcount and return it */
-		ResourceOwnerEnlarge(CurrentResourceOwner);
+		ResourceOwnerEnlargeCatCacheListRefs(CurrentResourceOwner);
 		cl->refcount++;
 		ResourceOwnerRememberCatCacheListRef(CurrentResourceOwner, cl);
 
@@ -1776,6 +1623,8 @@ SearchCatCacheList(CatCache *cache,
 	 * we finish constructing the CatCList.  ctlist must be valid throughout
 	 * the PG_TRY block.
 	 */
+	ResourceOwnerEnlargeCatCacheListRefs(CurrentResourceOwner);
+
 	ctlist = NIL;
 
 	PG_TRY();
@@ -1893,9 +1742,6 @@ SearchCatCacheList(CatCache *cache,
 
 		table_close(relation, AccessShareLock);
 
-		/* Make sure the resource owner has room to remember this entry. */
-		ResourceOwnerEnlarge(CurrentResourceOwner);
-
 		/* Now we can build the CatCList entry. */
 		oldcxt = MemoryContextSwitchTo(CacheMemoryContext);
 		nmembers = list_length(ctlist);
@@ -1960,12 +1806,7 @@ SearchCatCacheList(CatCache *cache,
 	}
 	Assert(i == nmembers);
 
-	/*
-	 * Add the CatCList to the appropriate bucket, and count it.
-	 */
-	dlist_push_head(lbucket, &cl->cache_elem);
-
-	cache->cc_nlist++;
+	dlist_push_head(&cache->cc_lists, &cl->cache_elem);
 
 	/* Finally, bump the list's refcount and return it */
 	cl->refcount++;
@@ -1985,18 +1826,11 @@ SearchCatCacheList(CatCache *cache,
 void
 ReleaseCatCacheList(CatCList *list)
 {
-	ReleaseCatCacheListWithOwner(list, CurrentResourceOwner);
-}
-
-static void
-ReleaseCatCacheListWithOwner(CatCList *list, ResourceOwner resowner)
-{
 	/* Safety checks to ensure we were handed a cache entry */
 	Assert(list->cl_magic == CL_MAGIC);
 	Assert(list->refcount > 0);
 	list->refcount--;
-	if (resowner)
-		ResourceOwnerForgetCatCacheListRef(CurrentResourceOwner, list);
+	ResourceOwnerForgetCatCacheListRef(CurrentResourceOwner, list);
 
 	if (
 #ifndef CATCACHE_FORCE_RELEASE
@@ -2305,43 +2139,31 @@ PrepareToInvalidateCacheTuple(Relation relation,
 	}
 }
 
-/* ResourceOwner callbacks */
 
-static void
-ResOwnerReleaseCatCache(Datum res)
+/*
+ * Subroutines for warning about reference leaks.  These are exported so
+ * that resowner.c can call them.
+ */
+void
+PrintCatCacheLeakWarning(HeapTuple tuple)
 {
-	ReleaseCatCacheWithOwner((HeapTuple) DatumGetPointer(res), NULL);
-}
-
-static char *
-ResOwnerPrintCatCache(Datum res)
-{
-	HeapTuple	tuple = (HeapTuple) DatumGetPointer(res);
 	CatCTup    *ct = (CatCTup *) (((char *) tuple) -
 								  offsetof(CatCTup, tuple));
 
 	/* Safety check to ensure we were handed a cache entry */
 	Assert(ct->ct_magic == CT_MAGIC);
 
-	return psprintf("cache %s (%d), tuple %u/%u has count %d",
-					ct->my_cache->cc_relname, ct->my_cache->id,
-					ItemPointerGetBlockNumber(&(tuple->t_self)),
-					ItemPointerGetOffsetNumber(&(tuple->t_self)),
-					ct->refcount);
+	elog(WARNING, "cache reference leak: cache %s (%d), tuple %u/%u has count %d",
+		 ct->my_cache->cc_relname, ct->my_cache->id,
+		 ItemPointerGetBlockNumber(&(tuple->t_self)),
+		 ItemPointerGetOffsetNumber(&(tuple->t_self)),
+		 ct->refcount);
 }
 
-static void
-ResOwnerReleaseCatCacheList(Datum res)
+void
+PrintCatCacheListLeakWarning(CatCList *list)
 {
-	ReleaseCatCacheListWithOwner((CatCList *) DatumGetPointer(res), NULL);
-}
-
-static char *
-ResOwnerPrintCatCacheList(Datum res)
-{
-	CatCList   *list = (CatCList *) DatumGetPointer(res);
-
-	return psprintf("cache %s (%d), list %p has count %d",
-					list->my_cache->cc_relname, list->my_cache->id,
-					list, list->refcount);
+	elog(WARNING, "cache reference leak: cache %s (%d), list %p has count %d",
+		 list->my_cache->cc_relname, list->my_cache->id,
+		 list, list->refcount);
 }

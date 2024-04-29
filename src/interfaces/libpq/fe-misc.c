@@ -19,7 +19,7 @@
  * routines.
  *
  *
- * Portions Copyright (c) 1996-2024, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2023, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -55,6 +55,7 @@ static int	pqPutMsgBytes(const void *buf, size_t len, PGconn *conn);
 static int	pqSendSome(PGconn *conn, int len);
 static int	pqSocketCheck(PGconn *conn, int forRead, int forWrite,
 						  time_t end_time);
+static int	pqSocketPoll(int sock, int forRead, int forWrite, time_t end_time);
 
 /*
  * PQlibVersion: return the libpq version number
@@ -1058,7 +1059,7 @@ pqSocketCheck(PGconn *conn, int forRead, int forWrite, time_t end_time)
 
 	/* We will retry as long as we get EINTR */
 	do
-		result = PQsocketPoll(conn->sock, forRead, forWrite, end_time);
+		result = pqSocketPoll(conn->sock, forRead, forWrite, end_time);
 	while (result < 0 && SOCK_ERRNO == EINTR);
 
 	if (result < 0)
@@ -1082,8 +1083,8 @@ pqSocketCheck(PGconn *conn, int forRead, int forWrite, time_t end_time)
  * Timeout is infinite if end_time is -1.  Timeout is immediate (no blocking)
  * if end_time is 0 (or indeed, any time before now).
  */
-int
-PQsocketPoll(int sock, int forRead, int forWrite, time_t end_time)
+static int
+pqSocketPoll(int sock, int forRead, int forWrite, time_t end_time)
 {
 	/* We use poll(2) if available, otherwise select(2) */
 #ifdef HAVE_POLL
@@ -1224,14 +1225,13 @@ static void
 libpq_binddomain(void)
 {
 	/*
-	 * At least on Windows, there are gettext implementations that fail if
-	 * multiple threads call bindtextdomain() concurrently.  Use a mutex and
-	 * flag variable to ensure that we call it just once per process.  It is
-	 * not known that similar bugs exist on non-Windows platforms, but we
-	 * might as well do it the same way everywhere.
+	 * If multiple threads come through here at about the same time, it's okay
+	 * for more than one of them to call bindtextdomain().  But it's not okay
+	 * for any of them to return to caller before bindtextdomain() is
+	 * complete, so don't set the flag till that's done.  Use "volatile" just
+	 * to be sure the compiler doesn't try to get cute.
 	 */
 	static volatile bool already_bound = false;
-	static pthread_mutex_t binddomain_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 	if (!already_bound)
 	{
@@ -1241,26 +1241,14 @@ libpq_binddomain(void)
 #else
 		int			save_errno = errno;
 #endif
+		const char *ldir;
 
-		(void) pthread_mutex_lock(&binddomain_mutex);
-
-		if (!already_bound)
-		{
-			const char *ldir;
-
-			/*
-			 * No relocatable lookup here because the calling executable could
-			 * be anywhere
-			 */
-			ldir = getenv("PGLOCALEDIR");
-			if (!ldir)
-				ldir = LOCALEDIR;
-			bindtextdomain(PG_TEXTDOMAIN("libpq"), ldir);
-			already_bound = true;
-		}
-
-		(void) pthread_mutex_unlock(&binddomain_mutex);
-
+		/* No relocatable lookup here because the binary could be anywhere */
+		ldir = getenv("PGLOCALEDIR");
+		if (!ldir)
+			ldir = LOCALEDIR;
+		bindtextdomain(PG_TEXTDOMAIN("libpq"), ldir);
+		already_bound = true;
 #ifdef WIN32
 		SetLastError(save_errno);
 #else

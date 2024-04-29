@@ -3,7 +3,7 @@ msgstr ""
 "Project-Id-Version: postgresql\n"
 "Report-Msgid-Bugs-To: pgsql-bugs@lists.postgresql.org\n"
 "POT-Creation-Date: 2022-08-12 10:40+0000\n"
-"PO-Revision-Date: 2022-09-13 14:35+0200\n"
+"PO-Revision-Date: 2023-08-17 17:06+0200\n"
 "Last-Translator: \n"
 "Language-Team: Ukrainian\n"
 "Language: uk_UA\n"
@@ -14359,7 +14359,7 @@ msgstr "не вдалось отримати доступ до файла зак
 #: libpq/be-secure-common.c:151
 #, c-format
 msgid "private key file \"%s\" is not a regular file"
-msgstr "файл закритого ключа \"%s\" не є звичайним"
+msgstr "файл закритого ключа \"%s\" не є звичайним файлом"
 
 #: libpq/be-secure-common.c:177
 #, c-format
@@ -14435,7 +14435,7 @@ msgstr "файл закритого ключа \"%s\" не можна перез
 #: libpq/be-secure-openssl.c:173
 #, c-format
 msgid "could not load private key file \"%s\": %s"
-msgstr "не вдалось завантажити файл закритого ключа \"%s\": %s"
+msgstr "не вдалося завантажити файл закритого ключа \"%s\": %s"
 
 #: libpq/be-secure-openssl.c:182
 #, c-format
@@ -26790,7 +26790,7 @@ msgid "Forces synchronization of updates to disk."
 msgstr "Примусова синхронізація оновлень на диск."
 
 #: utils/misc/guc.c:1297
-msgid "The server will use the fsync() system call in several places to make sure that updates are physically written to disk. This insures that a database cluster will recover to a consistent state after an operating system or hardware crash."
+msgid "The server will use the fsync() system call in several places to make sure that updates are physically written to disk. This ensures that a database cluster will recover to a consistent state after an operating system or hardware crash."
 msgstr "Сервер буде використовувати системний виклик fsync() в декількох місцях, щоб впевнитись, що оновлення фізично записані на диск. Це дозволить привести кластер бази даних в узгоджений стан після аварійного завершення роботи операційної системи або апаратного забезпечення."
 
 #: utils/misc/guc.c:1308

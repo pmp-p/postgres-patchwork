@@ -100,11 +100,12 @@ fi
 
 if echo "$@" |grep wasi
 then
+    shift
 	. /opt/python-wasm-sdk/wasisdk/wasisdk_env.sh
-	echo "      =============== building wasi  ===================   "
+	echo "      ======= building wasi with opts : $@ =========   "
 	#make distclean
 
-	CONFIG_SITE=${PREFIX}/config.site CC="wasi-c" CXX="wasi-c++" $CNF --cache-file=${PREFIX}/config.cache.emsdk && make
+	CONFIG_SITE=${PREFIX}/config.site CC="wasi-c" CXX="wasi-c++" $CNF --cache-file=${PREFIX}/config.cache.wasisdk && make
 	# && make install
 
 	exit 0
@@ -113,102 +114,113 @@ fi
 
 
 
-
-echo "      =============== building wasm  ===================   "
-
-. /opt/python-wasm-sdk/wasm32-bi-emscripten-shell.sh
-
-# was erased, default pfx is sdk dir
-export PREFIX=$PGROOT
-
-if [ -f ${PREFIX}/password ]
+if echo "$@" |grep emsdk
 then
-    echo "not changing db password"
-else
-    echo password > ${PREFIX}/password
-fi
-
-if [ -f ${PREFIX}/config.cache.emsdk ]
-then
-    echo "re-using config cache file from ${PREFIX}/config.cache.emsdk"
-else
-    cp config.cache.emsdk ${PREFIX}/
-fi
-
-# -lwebsocket.js -sPROXY_POSIX_SOCKETS -pthread -sPROXY_TO_PTHREAD
-# CONFIG_SITE=$(pwd)/config.site EMCC_CFLAGS="--oformat=html" \
-
-# --disable-shared is not supported
-
-CONFIG_SITE==${PGDATA}/config.site emconfigure $CNF --with-template=emscripten --cache-file=${PREFIX}/config.cache.emsdk $@
-
-
-sed -i 's|ZIC= ./zic|ZIC= zic|g' ./src/timezone/Makefile
-
-mkdir bin
-
-cat > bin/zic <<END
-#!/bin/bash
-. /opt/python-wasm-sdk/wasm32-bi-emscripten-shell.sh
-node $(pwd)/src/timezone/zic \$@
-END
-
-> /tmp/disable-shared.log
-
-# --disable-shared not supported so use a fake linker
-
-cat > bin/disable-shared <<END
-#!/bin/bash
-echo "[\$(pwd)] $0 \$@" >> /tmp/disable-shared.log
-for arg do
     shift
-    if [ "\$arg" = "-o" ]
+
+    echo "      ======== building wasm with opts : $@  ========= "
+
+    . /opt/python-wasm-sdk/wasm32-bi-emscripten-shell.sh
+
+    # was erased, default pfx is sdk dir
+    export PREFIX=$PGROOT
+
+    if [ -f ${PREFIX}/password ]
     then
-        continue
+        echo "not changing db password"
+    else
+        echo password > ${PREFIX}/password
     fi
-    if echo "\$arg" | grep -q ^-
+
+    if [ -f ${PREFIX}/config.cache.emsdk ]
     then
-        continue
+        echo "re-using config cache file from ${PREFIX}/config.cache.emsdk"
+    else
+        if [ -f ../config.cache.emsdk ]
+        then
+            cp ../config.cache.emsdk ${PREFIX}/
+        else
+            cp config.cache.emsdk ${PREFIX}/
+        fi
     fi
-    if echo "\$arg" | grep -q \\\\.o$
-    then
-        continue
-    fi
-    set -- "\$@" "\$arg"
-done
-touch \$@
+
+    # -lwebsocket.js -sPROXY_POSIX_SOCKETS -pthread -sPROXY_TO_PTHREAD
+    # CONFIG_SITE=$(pwd)/config.site EMCC_CFLAGS="--oformat=html" \
+
+    # --disable-shared is not supported
+
+    CONFIG_SITE==${PGDATA}/config.site emconfigure $CNF --with-template=emscripten --cache-file=${PREFIX}/config.cache.emsdk $@
+
+
+    sed -i 's|ZIC= ./zic|ZIC= zic|g' ./src/timezone/Makefile
+
+    mkdir -p bin
+
+    cat > bin/zic <<END
+    #!/bin/bash
+    . /opt/python-wasm-sdk/wasm32-bi-emscripten-shell.sh
+    node $(pwd)/src/timezone/zic \$@
 END
 
-# FIXME: workaround for /conversion_procs/ make
-cp bin/disable-shared bin/o
+    > /tmp/disable-shared.log
 
-chmod +x bin/zic bin/disable-shared bin/o
+    # --disable-shared not supported so use a fake linker
 
-rm /srv/www/html/pygbag/pg/libpq.so /srv/www/html/pygbag/pg/libpq.so.map
+    cat > bin/disable-shared <<END
+    #!/bin/bash
+    echo "[\$(pwd)] $0 \$@" >> /tmp/disable-shared.log
+    for arg do
+        shift
+        if [ "\$arg" = "-o" ]
+        then
+            continue
+        fi
+        if echo "\$arg" | grep -q ^-
+        then
+            continue
+        fi
+        if echo "\$arg" | grep -q \\\\.o$
+        then
+            continue
+        fi
+        set -- "\$@" "\$arg"
+    done
+    touch \$@
+END
 
-if [ -f $(pwd)/wasmfix.h ]
-then
-    export EMCC_CFLAGS="-include $(pwd)/wasmfix.h -sNODERAWFS"
-else
-    export EMCC_CFLAGS="-sNODERAWFS"
-fi
+    # FIXME: workaround for /conversion_procs/ make behaviour
+    # TODO: find what is wrong in shlib makefiles
 
-rm ./src/backend/postgres.wasm
+    cp bin/disable-shared bin/o
 
-# for zic and disable-shared
-PATH=$(pwd)/bin:$PATH
+    chmod +x bin/zic bin/disable-shared bin/o
 
-if emmake make -j $(nproc)
-then
+    rm /srv/www/html/pygbag/pg/libpq.so /srv/www/html/pygbag/pg/libpq.so.map
 
-	if emmake make -s install 2>&1 > /tmp/install.log
+    # prefer using explicit emscripten_force_exit in ipc.c (pg_)proc_exit
+    # export EMCC_CFLAGS="-sEXIT_RUNTIME=1 -sNODERAWFS $EMCC_CFLAGS"
+    export EMCC_CFLAGS="-sNODERAWFS $EMCC_CFLAGS"
+
+    if [ -f $(pwd)/wasmfix.h ]
+    then
+        export EMCC_CFLAGS="$EMCC_CFLAGS -include $(pwd)/wasmfix.h"
+    fi
+
+    # make clean would not remove that one
+    [ -f ./src/backend/postgres.wasm ] && rm ./src/backend/postgres.wasm
+
+
+    # for zic and disable-shared workarounds
+    PATH=$(pwd)/bin:$PATH
+
+    if emmake make -j $(nproc) install
 	then
 
 		mv -vf ./src/bin/initdb/initdb.wasm ./src/backend/postgres.wasm ./src/backend/postgres.map ${PREFIX}/bin/
 		mv -vf ./src/bin/initdb/initdb ${PREFIX}/bin/initdb.js
 		mv -vf ./src/backend/postgres ${PREFIX}/bin/postgres.js
 
-        sed dynamic_shared_memory_type = 'sysv'
+         # TODO: sed dynamic_shared_memory_type = 'sysv' in ${PGDATA}/postgresql.conf
 
         cat  > ${PREFIX}/postgres <<END
 #!/bin/bash
@@ -225,23 +237,12 @@ END
 node ${PREFIX}/bin/initdb.js \$@
 END
 
-        # force node wasm version
-        cp -vf ${PREFIX}/initdb.sh ${PREFIX}/bin/initdb
+        # init db hack file
+        # content of pipe is redirected to stderr and captured.
+        # log have been turned into comments
+        # file is almost ready to be parsed as sql
 
-        chmod +x ${PREFIX}/postgres ${PREFIX}/bin/postgres
-		chmod +x ${PREFIX}/initdb ${PREFIX}/bin/initdb
-
-		echo "initdb for PGDATA=${PGDATA} "
-
-    else
-        cat /tmp/install.log
-        echo "install failed"
-        exit 277
-	fi
-
-    # create empty db hack
-
-	cat >$PREFIX/initdb.sh <<END
+    	cat >$PREFIX/initdb.sh <<END
 #!/bin/bash
 rm -rf ${PGDATA} /tmp/initdb-*.log
 TZ=UTC
@@ -251,35 +252,71 @@ ${PREFIX}/initdb -k -g -N -U postgres --pwfile=${PREFIX}/password --locale=C --l
 grep -v dynamic_shared_memory_type ${PGDATA}/postgresql.conf > /tmp/pg-\$\$.conf
 mv /tmp/pg-\$\$.conf ${PGDATA}/postgresql.conf
 
-grep -v ^initdb.js /tmp/initdb-\$\$.log \\
- | tail -n +4 \\
- | head -n -1 \\
- > \$SQL
+#
+#grep -v ^invalid\\ binary /tmp/initdb-\$\$.log \\
+# | tail -n +1 \\
+# | head -n -1 \\
+# > \$SQL
+#
 
-head -n +11681 \$SQL > \${SQL}.boot.sql
-tail -n +11682 \$SQL > \${SQL}.single.sql
+grep -v ^invalid\\ binary /tmp/initdb-\$\$.log \\
+ | csplit - -s -n 1 -f \${SQL}-split /^build\\ indices\$/1
+
+mv \${SQL}-split0 \${SQL}.boot.sql
+grep -v ^# \${SQL}-split1 > \${SQL}.single.sql
 
 if \${CI:-false}
 then
     cp -vf \$SQL ${PREFIX}/\$(md5sum \$SQL|cut -c1-32).sql
 fi
+
 CMD="${PREFIX}/postgres --boot -d 1 -c log_checkpoints=false -X 16777216 -k"
 echo "\$CMD < \$SQL.boot.sql"
-\$CMD < \$SQL.boot.sql 2>&1 | grep -v 'bootstrap>'
+
+echo "initdb(boot) PRE"
+read
+
+# \$CMD < \$SQL.boot.sql 2>&1 | grep -v 'bootstrap>'
+
+echo
+echo "initdb(boot) done"
 read
 
 CMD="${PREFIX}/postgres --single -F -O -j -c search_path=pg_catalog -c exit_on_error=true -c log_checkpoints=false template1"
 echo "\$CMD < \$SQL.single.sql"
 \$CMD < \$SQL.single.sql
+echo
+echo "initdb(single) done"
 read
 
-
-echo cleaning up sql journal
+echo cleaning up sql extracts
 read
-rm /tmp/initdb-\$\$.log /tmp/initdb-\$\$.*.sql
+rm /tmp/initdb-\$\$.log \${SQL}-split1 /tmp/initdb-\$\$.*.sql
 END
 
-	chmod +x $PREFIX/*.sh
+	    chmod +x $PREFIX/*.sh
+
+        # force node wasm version
+        cp -vf ${PREFIX}/initdb.sh ${PREFIX}/bin/initdb
+
+        chmod +x ${PREFIX}/postgres ${PREFIX}/bin/postgres
+		chmod +x ${PREFIX}/initdb ${PREFIX}/bin/initdb
+
+    else
+        cat /tmp/install.log
+        echo "install failed"
+        exit 277
+    fi
+fi
+
+
+
+if echo "$@" |grep test
+then
+    shift
+
+    echo "      ======= testing with opts: $@ =========   "
+
 
 	$PREFIX/initdb.sh
 	echo "initdb.sh done, now init sql default database"
@@ -322,7 +359,4 @@ END
         tar -cpRz ${PREFIX} > /tmp/sdk/pg.tar.gz
     fi
 
-else
-    echo build failed
-    exit 280
 fi

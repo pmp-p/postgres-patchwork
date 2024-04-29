@@ -1,9 +1,9 @@
 
-# Copyright (c) 2021-2024, PostgreSQL Global Development Group
+# Copyright (c) 2021-2023, PostgreSQL Global Development Group
 
 # Tests for various bugs found over time
 use strict;
-use warnings FATAL => 'all';
+use warnings;
 use PostgreSQL::Test::Cluster;
 use PostgreSQL::Test::Utils;
 use Test::More;
@@ -24,7 +24,7 @@ $node_publisher->init(allows_streaming => 'logical');
 $node_publisher->start;
 
 my $node_subscriber = PostgreSQL::Test::Cluster->new('subscriber');
-$node_subscriber->init;
+$node_subscriber->init(allows_streaming => 'logical');
 $node_subscriber->start;
 
 my $publisher_connstr = $node_publisher->connstr . ' dbname=postgres';
@@ -175,7 +175,7 @@ $node_pub_sub->init(allows_streaming => 'logical');
 $node_pub_sub->start;
 
 my $node_sub = PostgreSQL::Test::Cluster->new('testsubscriber1');
-$node_sub->init;
+$node_sub->init(allows_streaming => 'logical');
 $node_sub->start;
 
 # Create the tables in all nodes.

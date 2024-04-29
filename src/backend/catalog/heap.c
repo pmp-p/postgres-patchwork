@@ -3,7 +3,7 @@
  * heap.c
  *	  code to create and destroy POSTGRES heap relations
  *
- * Portions Copyright (c) 1996-2024, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2023, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -56,7 +56,6 @@
 #include "catalog/storage.h"
 #include "commands/tablecmds.h"
 #include "commands/typecmds.h"
-#include "common/int.h"
 #include "miscadmin.h"
 #include "nodes/nodeFuncs.h"
 #include "optimizer/optimizer.h"
@@ -229,7 +228,7 @@ static const FormData_pg_attribute a6 = {
 	.attislocal = true,
 };
 
-static const FormData_pg_attribute *const SysAtt[] = {&a1, &a2, &a3, &a4, &a5, &a6};
+static const FormData_pg_attribute *SysAtt[] = {&a1, &a2, &a3, &a4, &a5, &a6};
 
 /*
  * This function returns a Form_pg_attribute pointer for a system attribute.
@@ -553,9 +552,6 @@ CheckAttributeType(const char *attname,
 	char		att_typtype = get_typtype(atttypid);
 	Oid			att_typelem;
 
-	/* since this function recurses, it could be driven to stack overflow */
-	check_stack_depth();
-
 	if (att_typtype == TYPTYPE_PSEUDO)
 	{
 		/*
@@ -684,11 +680,10 @@ CheckAttributeType(const char *attname,
  *		Construct and insert a set of tuples in pg_attribute.
  *
  * Caller has already opened and locked pg_attribute.  tupdesc contains the
- * attributes to insert.  attcacheoff is always initialized to -1.
- * tupdesc_extra supplies the values for certain variable-length/nullable
- * pg_attribute fields and must contain the same number of elements as tupdesc
- * or be NULL.  The other variable-length fields of pg_attribute are always
- * initialized to null values.
+ * attributes to insert.  attcacheoff is always initialized to -1.  attoptions
+ * supplies the values for the attoptions fields and must contain the same
+ * number of elements as tupdesc or be NULL.  The other variable-length fields
+ * of pg_attribute are always initialized to null values.
  *
  * indstate is the index state for CatalogTupleInsertWithInfo.  It can be
  * passed as NULL, in which case we'll fetch the necessary info.  (Don't do
@@ -702,7 +697,7 @@ void
 InsertPgAttributeTuples(Relation pg_attribute_rel,
 						TupleDesc tupdesc,
 						Oid new_rel_oid,
-						const FormExtraData_pg_attribute tupdesc_extra[],
+						Datum *attoptions,
 						CatalogIndexState indstate)
 {
 	TupleTableSlot **slot;
@@ -724,7 +719,6 @@ InsertPgAttributeTuples(Relation pg_attribute_rel,
 	while (natts < tupdesc->natts)
 	{
 		Form_pg_attribute attrs = TupleDescAttr(tupdesc, natts);
-		const FormExtraData_pg_attribute *attrs_extra = tupdesc_extra ? &tupdesc_extra[natts] : NULL;
 
 		ExecClearTuple(slot[slotCount]);
 
@@ -755,24 +749,14 @@ InsertPgAttributeTuples(Relation pg_attribute_rel,
 		slot[slotCount]->tts_values[Anum_pg_attribute_attisdropped - 1] = BoolGetDatum(attrs->attisdropped);
 		slot[slotCount]->tts_values[Anum_pg_attribute_attislocal - 1] = BoolGetDatum(attrs->attislocal);
 		slot[slotCount]->tts_values[Anum_pg_attribute_attinhcount - 1] = Int16GetDatum(attrs->attinhcount);
+		slot[slotCount]->tts_values[Anum_pg_attribute_attstattarget - 1] = Int16GetDatum(attrs->attstattarget);
 		slot[slotCount]->tts_values[Anum_pg_attribute_attcollation - 1] = ObjectIdGetDatum(attrs->attcollation);
-		if (attrs_extra)
-		{
-			slot[slotCount]->tts_values[Anum_pg_attribute_attstattarget - 1] = attrs_extra->attstattarget.value;
-			slot[slotCount]->tts_isnull[Anum_pg_attribute_attstattarget - 1] = attrs_extra->attstattarget.isnull;
-
-			slot[slotCount]->tts_values[Anum_pg_attribute_attoptions - 1] = attrs_extra->attoptions.value;
-			slot[slotCount]->tts_isnull[Anum_pg_attribute_attoptions - 1] = attrs_extra->attoptions.isnull;
-		}
+		if (attoptions && attoptions[natts] != (Datum) 0)
+			slot[slotCount]->tts_values[Anum_pg_attribute_attoptions - 1] = attoptions[natts];
 		else
-		{
-			slot[slotCount]->tts_isnull[Anum_pg_attribute_attstattarget - 1] = true;
 			slot[slotCount]->tts_isnull[Anum_pg_attribute_attoptions - 1] = true;
-		}
 
-		/*
-		 * The remaining fields are not set for new columns.
-		 */
+		/* start out with empty permissions and empty options */
 		slot[slotCount]->tts_isnull[Anum_pg_attribute_attacl - 1] = true;
 		slot[slotCount]->tts_isnull[Anum_pg_attribute_attfdwoptions - 1] = true;
 		slot[slotCount]->tts_isnull[Anum_pg_attribute_attmissingval - 1] = true;
@@ -834,6 +818,9 @@ AddNewAttributeTuples(Oid new_rel_oid,
 
 	indstate = CatalogOpenIndexes(rel);
 
+	/* set stats detail level to a sane default */
+	for (int i = 0; i < natts; i++)
+		tupdesc->attrs[i].attstattarget = -1;
 	InsertPgAttributeTuples(rel, tupdesc, new_rel_oid, NULL, indstate);
 
 	/* add dependencies on their datatypes and collations */
@@ -856,9 +843,9 @@ AddNewAttributeTuples(Oid new_rel_oid,
 	}
 
 	/*
-	 * Next we add the system attributes.  Skip all for a view or type
-	 * relation.  We don't bother with making datatype dependencies here,
-	 * since presumably all these types are pinned.
+	 * Next we add the system attributes.  Skip OID if rel has no OIDs. Skip
+	 * all for a view or type relation.  We don't bother with making datatype
+	 * dependencies here, since presumably all these types are pinned.
 	 */
 	if (relkind != RELKIND_VIEW && relkind != RELKIND_COMPOSITE_TYPE)
 	{
@@ -1660,9 +1647,6 @@ RemoveAttributeById(Oid relid, AttrNumber attnum)
 	HeapTuple	tuple;
 	Form_pg_attribute attStruct;
 	char		newattname[NAMEDATALEN];
-	Datum		valuesAtt[Natts_pg_attribute] = {0};
-	bool		nullsAtt[Natts_pg_attribute] = {0};
-	bool		replacesAtt[Natts_pg_attribute] = {0};
 
 	/*
 	 * Grab an exclusive lock on the target table, which we will NOT release
@@ -1682,54 +1666,67 @@ RemoveAttributeById(Oid relid, AttrNumber attnum)
 			 attnum, relid);
 	attStruct = (Form_pg_attribute) GETSTRUCT(tuple);
 
-	/* Mark the attribute as dropped */
-	attStruct->attisdropped = true;
+	if (attnum < 0)
+	{
+		/* System attribute (probably OID) ... just delete the row */
 
-	/*
-	 * Set the type OID to invalid.  A dropped attribute's type link cannot be
-	 * relied on (once the attribute is dropped, the type might be too).
-	 * Fortunately we do not need the type row --- the only really essential
-	 * information is the type's typlen and typalign, which are preserved in
-	 * the attribute's attlen and attalign.  We set atttypid to zero here as a
-	 * means of catching code that incorrectly expects it to be valid.
-	 */
-	attStruct->atttypid = InvalidOid;
+		CatalogTupleDelete(attr_rel, &tuple->t_self);
+	}
+	else
+	{
+		/* Dropping user attributes is lots harder */
 
-	/* Remove any not-null constraint the column may have */
-	attStruct->attnotnull = false;
+		/* Mark the attribute as dropped */
+		attStruct->attisdropped = true;
 
-	/* Unset this so no one tries to look up the generation expression */
-	attStruct->attgenerated = '\0';
+		/*
+		 * Set the type OID to invalid.  A dropped attribute's type link
+		 * cannot be relied on (once the attribute is dropped, the type might
+		 * be too). Fortunately we do not need the type row --- the only
+		 * really essential information is the type's typlen and typalign,
+		 * which are preserved in the attribute's attlen and attalign.  We set
+		 * atttypid to zero here as a means of catching code that incorrectly
+		 * expects it to be valid.
+		 */
+		attStruct->atttypid = InvalidOid;
 
-	/*
-	 * Change the column name to something that isn't likely to conflict
-	 */
-	snprintf(newattname, sizeof(newattname),
-			 "........pg.dropped.%d........", attnum);
-	namestrcpy(&(attStruct->attname), newattname);
+		/* Remove any NOT NULL constraint the column may have */
+		attStruct->attnotnull = false;
 
-	/* Clear the missing value */
-	attStruct->atthasmissing = false;
-	nullsAtt[Anum_pg_attribute_attmissingval - 1] = true;
-	replacesAtt[Anum_pg_attribute_attmissingval - 1] = true;
+		/* We don't want to keep stats for it anymore */
+		attStruct->attstattarget = 0;
 
-	/*
-	 * Clear the other nullable fields.  This saves some space in pg_attribute
-	 * and removes no longer useful information.
-	 */
-	nullsAtt[Anum_pg_attribute_attstattarget - 1] = true;
-	replacesAtt[Anum_pg_attribute_attstattarget - 1] = true;
-	nullsAtt[Anum_pg_attribute_attacl - 1] = true;
-	replacesAtt[Anum_pg_attribute_attacl - 1] = true;
-	nullsAtt[Anum_pg_attribute_attoptions - 1] = true;
-	replacesAtt[Anum_pg_attribute_attoptions - 1] = true;
-	nullsAtt[Anum_pg_attribute_attfdwoptions - 1] = true;
-	replacesAtt[Anum_pg_attribute_attfdwoptions - 1] = true;
+		/* Unset this so no one tries to look up the generation expression */
+		attStruct->attgenerated = '\0';
 
-	tuple = heap_modify_tuple(tuple, RelationGetDescr(attr_rel),
-							  valuesAtt, nullsAtt, replacesAtt);
+		/*
+		 * Change the column name to something that isn't likely to conflict
+		 */
+		snprintf(newattname, sizeof(newattname),
+				 "........pg.dropped.%d........", attnum);
+		namestrcpy(&(attStruct->attname), newattname);
 
-	CatalogTupleUpdate(attr_rel, &tuple->t_self, tuple);
+		/* clear the missing value if any */
+		if (attStruct->atthasmissing)
+		{
+			Datum		valuesAtt[Natts_pg_attribute] = {0};
+			bool		nullsAtt[Natts_pg_attribute] = {0};
+			bool		replacesAtt[Natts_pg_attribute] = {0};
+
+			/* update the tuple - set atthasmissing and attmissingval */
+			valuesAtt[Anum_pg_attribute_atthasmissing - 1] =
+				BoolGetDatum(false);
+			replacesAtt[Anum_pg_attribute_atthasmissing - 1] = true;
+			valuesAtt[Anum_pg_attribute_attmissingval - 1] = (Datum) 0;
+			nullsAtt[Anum_pg_attribute_attmissingval - 1] = true;
+			replacesAtt[Anum_pg_attribute_attmissingval - 1] = true;
+
+			tuple = heap_modify_tuple(tuple, RelationGetDescr(attr_rel),
+									  valuesAtt, nullsAtt, replacesAtt);
+		}
+
+		CatalogTupleUpdate(attr_rel, &tuple->t_self, tuple);
+	}
 
 	/*
 	 * Because updating the pg_attribute row will trigger a relcache flush for
@@ -1739,7 +1736,8 @@ RemoveAttributeById(Oid relid, AttrNumber attnum)
 
 	table_close(attr_rel, RowExclusiveLock);
 
-	RemoveStatistics(relid, attnum);
+	if (attnum > 0)
+		RemoveStatistics(relid, attnum);
 
 	relation_close(rel, NoLock);
 }
@@ -2155,59 +2153,10 @@ StoreRelCheck(Relation rel, const char *ccname, Node *expr,
 							  is_local, /* conislocal */
 							  inhcount, /* coninhcount */
 							  is_no_inherit,	/* connoinherit */
-							  false,	/* conperiod */
 							  is_internal); /* internally constructed? */
 
 	pfree(ccbin);
 
-	return constrOid;
-}
-
-/*
- * Store a not-null constraint for the given relation
- *
- * The OID of the new constraint is returned.
- */
-static Oid
-StoreRelNotNull(Relation rel, const char *nnname, AttrNumber attnum,
-				bool is_validated, bool is_local, int inhcount,
-				bool is_no_inherit)
-{
-	Oid			constrOid;
-
-	constrOid =
-		CreateConstraintEntry(nnname,
-							  RelationGetNamespace(rel),
-							  CONSTRAINT_NOTNULL,
-							  false,
-							  false,
-							  is_validated,
-							  InvalidOid,
-							  RelationGetRelid(rel),
-							  &attnum,
-							  1,
-							  1,
-							  InvalidOid,	/* not a domain constraint */
-							  InvalidOid,	/* no associated index */
-							  InvalidOid,	/* Foreign key fields */
-							  NULL,
-							  NULL,
-							  NULL,
-							  NULL,
-							  0,
-							  ' ',
-							  ' ',
-							  NULL,
-							  0,
-							  ' ',
-							  NULL, /* not an exclusion constraint */
-							  NULL,
-							  NULL,
-							  is_local,
-							  inhcount,
-							  is_no_inherit,
-							  false,	/* conperiod */
-							  false);
 	return constrOid;
 }
 
@@ -2255,14 +2204,6 @@ StoreConstraints(Relation rel, List *cooked_constraints, bool is_internal)
 								  is_internal);
 				numchecks++;
 				break;
-
-			case CONSTR_NOTNULL:
-				con->conoid =
-					StoreRelNotNull(rel, con->name, con->attnum,
-									!con->skip_validation, con->is_local,
-									con->inhcount, con->is_no_inherit);
-				break;
-
 			default:
 				elog(ERROR, "unrecognized constraint type: %d",
 					 (int) con->contype);
@@ -2287,8 +2228,6 @@ StoreConstraints(Relation rel, List *cooked_constraints, bool is_internal)
  * allow_merge: true if check constraints may be merged with existing ones
  * is_local: true if definition is local, false if it's inherited
  * is_internal: true if result of some internal process, not a user request
- * queryString: used during expression transformation of default values and
- *		cooked CHECK constraints
  *
  * All entries in newColDefaults will be processed.  Entries in newConstraints
  * will be processed only if they are CONSTR_CHECK type.
@@ -2320,7 +2259,6 @@ AddRelationNewConstraints(Relation rel,
 	ParseNamespaceItem *nsitem;
 	int			numchecks;
 	List	   *checknames;
-	List	   *nnnames;
 	ListCell   *cell;
 	Node	   *expr;
 	CookedConstraint *cooked;
@@ -2407,224 +2345,130 @@ AddRelationNewConstraints(Relation rel,
 	 */
 	numchecks = numoldchecks;
 	checknames = NIL;
-	nnnames = NIL;
 	foreach(cell, newConstraints)
 	{
 		Constraint *cdef = (Constraint *) lfirst(cell);
+		char	   *ccname;
 		Oid			constrOid;
 
-		if (cdef->contype == CONSTR_CHECK)
+		if (cdef->contype != CONSTR_CHECK)
+			continue;
+
+		if (cdef->raw_expr != NULL)
 		{
-			char	   *ccname;
-
-			if (cdef->raw_expr != NULL)
-			{
-				Assert(cdef->cooked_expr == NULL);
-
-				/*
-				 * Transform raw parsetree to executable expression, and
-				 * verify it's valid as a CHECK constraint.
-				 */
-				expr = cookConstraint(pstate, cdef->raw_expr,
-									  RelationGetRelationName(rel));
-			}
-			else
-			{
-				Assert(cdef->cooked_expr != NULL);
-
-				/*
-				 * Here, we assume the parser will only pass us valid CHECK
-				 * expressions, so we do no particular checking.
-				 */
-				expr = stringToNode(cdef->cooked_expr);
-			}
+			Assert(cdef->cooked_expr == NULL);
 
 			/*
-			 * Check name uniqueness, or generate a name if none was given.
+			 * Transform raw parsetree to executable expression, and verify
+			 * it's valid as a CHECK constraint.
 			 */
-			if (cdef->conname != NULL)
-			{
-				ListCell   *cell2;
-
-				ccname = cdef->conname;
-				/* Check against other new constraints */
-				/* Needed because we don't do CommandCounterIncrement in loop */
-				foreach(cell2, checknames)
-				{
-					if (strcmp((char *) lfirst(cell2), ccname) == 0)
-						ereport(ERROR,
-								(errcode(ERRCODE_DUPLICATE_OBJECT),
-								 errmsg("check constraint \"%s\" already exists",
-										ccname)));
-				}
-
-				/* save name for future checks */
-				checknames = lappend(checknames, ccname);
-
-				/*
-				 * Check against pre-existing constraints.  If we are allowed
-				 * to merge with an existing constraint, there's no more to do
-				 * here. (We omit the duplicate constraint from the result,
-				 * which is what ATAddCheckConstraint wants.)
-				 */
-				if (MergeWithExistingConstraint(rel, ccname, expr,
-												allow_merge, is_local,
-												cdef->initially_valid,
-												cdef->is_no_inherit))
-					continue;
-			}
-			else
-			{
-				/*
-				 * When generating a name, we want to create "tab_col_check"
-				 * for a column constraint and "tab_check" for a table
-				 * constraint.  We no longer have any info about the syntactic
-				 * positioning of the constraint phrase, so we approximate
-				 * this by seeing whether the expression references more than
-				 * one column.  (If the user played by the rules, the result
-				 * is the same...)
-				 *
-				 * Note: pull_var_clause() doesn't descend into sublinks, but
-				 * we eliminated those above; and anyway this only needs to be
-				 * an approximate answer.
-				 */
-				List	   *vars;
-				char	   *colname;
-
-				vars = pull_var_clause(expr, 0);
-
-				/* eliminate duplicates */
-				vars = list_union(NIL, vars);
-
-				if (list_length(vars) == 1)
-					colname = get_attname(RelationGetRelid(rel),
-										  ((Var *) linitial(vars))->varattno,
-										  true);
-				else
-					colname = NULL;
-
-				ccname = ChooseConstraintName(RelationGetRelationName(rel),
-											  colname,
-											  "check",
-											  RelationGetNamespace(rel),
-											  checknames);
-
-				/* save name for future checks */
-				checknames = lappend(checknames, ccname);
-			}
-
-			/*
-			 * OK, store it.
-			 */
-			constrOid =
-				StoreRelCheck(rel, ccname, expr, cdef->initially_valid, is_local,
-							  is_local ? 0 : 1, cdef->is_no_inherit, is_internal);
-
-			numchecks++;
-
-			cooked = (CookedConstraint *) palloc(sizeof(CookedConstraint));
-			cooked->contype = CONSTR_CHECK;
-			cooked->conoid = constrOid;
-			cooked->name = ccname;
-			cooked->attnum = 0;
-			cooked->expr = expr;
-			cooked->skip_validation = cdef->skip_validation;
-			cooked->is_local = is_local;
-			cooked->inhcount = is_local ? 0 : 1;
-			cooked->is_no_inherit = cdef->is_no_inherit;
-			cookedConstraints = lappend(cookedConstraints, cooked);
+			expr = cookConstraint(pstate, cdef->raw_expr,
+								  RelationGetRelationName(rel));
 		}
-		else if (cdef->contype == CONSTR_NOTNULL)
+		else
 		{
-			CookedConstraint *nncooked;
-			AttrNumber	colnum;
-			char	   *nnname;
-			int			existing;
-
-			/* Determine which column to modify */
-			colnum = get_attnum(RelationGetRelid(rel), strVal(linitial(cdef->keys)));
-			if (colnum == InvalidAttrNumber)	/* shouldn't happen */
-				elog(ERROR, "cache lookup failed for attribute \"%s\" of relation %u",
-					 strVal(linitial(cdef->keys)), RelationGetRelid(rel));
+			Assert(cdef->cooked_expr != NULL);
 
 			/*
-			 * If the column already has an inheritable not-null constraint,
-			 * we need only adjust its inheritance status and we're done.  If
-			 * the constraint is there but marked NO INHERIT, then it is
-			 * updated in the same way, but we also recurse to the children
-			 * (if any) to add the constraint there as well.
+			 * Here, we assume the parser will only pass us valid CHECK
+			 * expressions, so we do no particular checking.
 			 */
-			existing = AdjustNotNullInheritance1(RelationGetRelid(rel), colnum,
-												 cdef->inhcount, cdef->is_no_inherit);
-			if (existing == 1)
-				continue;		/* all done! */
-			else if (existing == -1)
+			expr = stringToNode(cdef->cooked_expr);
+		}
+
+		/*
+		 * Check name uniqueness, or generate a name if none was given.
+		 */
+		if (cdef->conname != NULL)
+		{
+			ListCell   *cell2;
+
+			ccname = cdef->conname;
+			/* Check against other new constraints */
+			/* Needed because we don't do CommandCounterIncrement in loop */
+			foreach(cell2, checknames)
 			{
-				List	   *children;
-
-				children = find_inheritance_children(RelationGetRelid(rel), NoLock);
-				foreach_oid(childoid, children)
-				{
-					Relation	childrel = table_open(childoid, NoLock);
-
-					AddRelationNewConstraints(childrel,
-											  NIL,
-											  list_make1(copyObject(cdef)),
-											  allow_merge,
-											  is_local,
-											  is_internal,
-											  queryString);
-					/* these constraints are not in the return list -- good? */
-
-					table_close(childrel, NoLock);
-				}
-
-				continue;
-			}
-
-			/*
-			 * If a constraint name is specified, check that it isn't already
-			 * used.  Otherwise, choose a non-conflicting one ourselves.
-			 */
-			if (cdef->conname)
-			{
-				if (ConstraintNameIsUsed(CONSTRAINT_RELATION,
-										 RelationGetRelid(rel),
-										 cdef->conname))
+				if (strcmp((char *) lfirst(cell2), ccname) == 0)
 					ereport(ERROR,
-							errcode(ERRCODE_DUPLICATE_OBJECT),
-							errmsg("constraint \"%s\" for relation \"%s\" already exists",
-								   cdef->conname, RelationGetRelationName(rel)));
-				nnname = cdef->conname;
+							(errcode(ERRCODE_DUPLICATE_OBJECT),
+							 errmsg("check constraint \"%s\" already exists",
+									ccname)));
 			}
-			else
-				nnname = ChooseConstraintName(RelationGetRelationName(rel),
-											  strVal(linitial(cdef->keys)),
-											  "not_null",
-											  RelationGetNamespace(rel),
-											  nnnames);
-			nnnames = lappend(nnnames, nnname);
 
-			constrOid =
-				StoreRelNotNull(rel, nnname, colnum,
-								cdef->initially_valid,
-								cdef->inhcount == 0,
-								cdef->inhcount,
-								cdef->is_no_inherit);
+			/* save name for future checks */
+			checknames = lappend(checknames, ccname);
 
-			nncooked = (CookedConstraint *) palloc(sizeof(CookedConstraint));
-			nncooked->contype = CONSTR_NOTNULL;
-			nncooked->conoid = constrOid;
-			nncooked->name = nnname;
-			nncooked->attnum = colnum;
-			nncooked->expr = NULL;
-			nncooked->skip_validation = cdef->skip_validation;
-			nncooked->is_local = is_local;
-			nncooked->inhcount = cdef->inhcount;
-			nncooked->is_no_inherit = cdef->is_no_inherit;
-
-			cookedConstraints = lappend(cookedConstraints, nncooked);
+			/*
+			 * Check against pre-existing constraints.  If we are allowed to
+			 * merge with an existing constraint, there's no more to do here.
+			 * (We omit the duplicate constraint from the result, which is
+			 * what ATAddCheckConstraint wants.)
+			 */
+			if (MergeWithExistingConstraint(rel, ccname, expr,
+											allow_merge, is_local,
+											cdef->initially_valid,
+											cdef->is_no_inherit))
+				continue;
 		}
+		else
+		{
+			/*
+			 * When generating a name, we want to create "tab_col_check" for a
+			 * column constraint and "tab_check" for a table constraint.  We
+			 * no longer have any info about the syntactic positioning of the
+			 * constraint phrase, so we approximate this by seeing whether the
+			 * expression references more than one column.  (If the user
+			 * played by the rules, the result is the same...)
+			 *
+			 * Note: pull_var_clause() doesn't descend into sublinks, but we
+			 * eliminated those above; and anyway this only needs to be an
+			 * approximate answer.
+			 */
+			List	   *vars;
+			char	   *colname;
+
+			vars = pull_var_clause(expr, 0);
+
+			/* eliminate duplicates */
+			vars = list_union(NIL, vars);
+
+			if (list_length(vars) == 1)
+				colname = get_attname(RelationGetRelid(rel),
+									  ((Var *) linitial(vars))->varattno,
+									  true);
+			else
+				colname = NULL;
+
+			ccname = ChooseConstraintName(RelationGetRelationName(rel),
+										  colname,
+										  "check",
+										  RelationGetNamespace(rel),
+										  checknames);
+
+			/* save name for future checks */
+			checknames = lappend(checknames, ccname);
+		}
+
+		/*
+		 * OK, store it.
+		 */
+		constrOid =
+			StoreRelCheck(rel, ccname, expr, cdef->initially_valid, is_local,
+						  is_local ? 0 : 1, cdef->is_no_inherit, is_internal);
+
+		numchecks++;
+
+		cooked = (CookedConstraint *) palloc(sizeof(CookedConstraint));
+		cooked->contype = CONSTR_CHECK;
+		cooked->conoid = constrOid;
+		cooked->name = ccname;
+		cooked->attnum = 0;
+		cooked->expr = expr;
+		cooked->skip_validation = cdef->skip_validation;
+		cooked->is_local = is_local;
+		cooked->inhcount = is_local ? 0 : 1;
+		cooked->is_no_inherit = cdef->is_no_inherit;
+		cookedConstraints = lappend(cookedConstraints, cooked);
 	}
 
 	/*
@@ -2792,218 +2636,6 @@ MergeWithExistingConstraint(Relation rel, const char *ccname, Node *expr,
 	table_close(conDesc, RowExclusiveLock);
 
 	return found;
-}
-
-/* list_sort comparator to sort CookedConstraint by attnum */
-static int
-list_cookedconstr_attnum_cmp(const ListCell *p1, const ListCell *p2)
-{
-	AttrNumber	v1 = ((CookedConstraint *) lfirst(p1))->attnum;
-	AttrNumber	v2 = ((CookedConstraint *) lfirst(p2))->attnum;
-
-	return pg_cmp_s16(v1, v2);
-}
-
-/*
- * Create the not-null constraints when creating a new relation
- *
- * These come from two sources: the 'constraints' list (of Constraint) is
- * specified directly by the user; the 'old_notnulls' list (of
- * CookedConstraint) comes from inheritance.  We create one constraint
- * for each column, giving priority to user-specified ones, and setting
- * inhcount according to how many parents cause each column to get a
- * not-null constraint.  If a user-specified name clashes with another
- * user-specified name, an error is raised.
- *
- * Note that inherited constraints have two shapes: those coming from another
- * not-null constraint in the parent, which have a name already, and those
- * coming from a primary key in the parent, which don't.  Any name specified
- * in a parent is disregarded in case of a conflict.
- *
- * Returns a list of AttrNumber for columns that need to have the attnotnull
- * flag set.
- */
-List *
-AddRelationNotNullConstraints(Relation rel, List *constraints,
-							  List *old_notnulls)
-{
-	List	   *givennames;
-	List	   *nnnames;
-	List	   *nncols = NIL;
-	ListCell   *lc;
-
-	/*
-	 * We track two lists of names: nnnames keeps all the constraint names,
-	 * givennames tracks user-generated names.  The distinction is important,
-	 * because we must raise error for user-generated name conflicts, but for
-	 * system-generated name conflicts we just generate another.
-	 */
-	nnnames = NIL;
-	givennames = NIL;
-
-	/*
-	 * First, create all not-null constraints that are directly specified by
-	 * the user.  Note that inheritance might have given us another source for
-	 * each, so we must scan the old_notnulls list and increment inhcount for
-	 * each element with identical attnum.  We delete from there any element
-	 * that we process.
-	 */
-	foreach(lc, constraints)
-	{
-		Constraint *constr = lfirst_node(Constraint, lc);
-		AttrNumber	attnum;
-		char	   *conname;
-		bool		is_local = true;
-		int			inhcount = 0;
-		ListCell   *lc2;
-
-		Assert(constr->contype == CONSTR_NOTNULL);
-
-		attnum = get_attnum(RelationGetRelid(rel),
-							strVal(linitial(constr->keys)));
-
-		/*
-		 * Search in the list of inherited constraints for any entries on the
-		 * same column.
-		 */
-		foreach(lc2, old_notnulls)
-		{
-			CookedConstraint *old = (CookedConstraint *) lfirst(lc2);
-
-			if (old->attnum == attnum)
-			{
-				/*
-				 * If we get a constraint from the parent, having a local NO
-				 * INHERIT one doesn't work.
-				 */
-				if (constr->is_no_inherit)
-					ereport(ERROR,
-							(errcode(ERRCODE_DATATYPE_MISMATCH),
-							 errmsg("cannot define not-null constraint on column \"%s\" with NO INHERIT",
-									strVal(linitial(constr->keys))),
-							 errdetail("The column has an inherited not-null constraint.")));
-
-				inhcount++;
-				old_notnulls = foreach_delete_current(old_notnulls, lc2);
-			}
-		}
-
-		/*
-		 * Determine a constraint name, which may have been specified by the
-		 * user, or raise an error if a conflict exists with another
-		 * user-specified name.
-		 */
-		if (constr->conname)
-		{
-			foreach(lc2, givennames)
-			{
-				if (strcmp(lfirst(lc2), constr->conname) == 0)
-					ereport(ERROR,
-							errcode(ERRCODE_DUPLICATE_OBJECT),
-							errmsg("constraint \"%s\" for relation \"%s\" already exists",
-								   constr->conname,
-								   RelationGetRelationName(rel)));
-			}
-
-			conname = constr->conname;
-			givennames = lappend(givennames, conname);
-		}
-		else
-			conname = ChooseConstraintName(RelationGetRelationName(rel),
-										   get_attname(RelationGetRelid(rel),
-													   attnum, false),
-										   "not_null",
-										   RelationGetNamespace(rel),
-										   nnnames);
-		nnnames = lappend(nnnames, conname);
-
-		StoreRelNotNull(rel, conname,
-						attnum, true, is_local,
-						inhcount, constr->is_no_inherit);
-
-		nncols = lappend_int(nncols, attnum);
-	}
-
-	/*
-	 * If any column remains in the old_notnulls list, we must create a not-
-	 * null constraint marked not-local.  Because multiple parents could
-	 * specify a not-null constraint for the same column, we must count how
-	 * many there are and add to the original inhcount accordingly, deleting
-	 * elements we've already processed.  We sort the list to make it easy.
-	 *
-	 * We don't use foreach() here because we have two nested loops over the
-	 * constraint list, with possible element deletions in the inner one. If
-	 * we used foreach_delete_current() it could only fix up the state of one
-	 * of the loops, so it seems cleaner to use looping over list indexes for
-	 * both loops.  Note that any deletion will happen beyond where the outer
-	 * loop is, so its index never needs adjustment.
-	 */
-	list_sort(old_notnulls, list_cookedconstr_attnum_cmp);
-	for (int outerpos = 0; outerpos < list_length(old_notnulls); outerpos++)
-	{
-		CookedConstraint *cooked;
-		char	   *conname = NULL;
-		int			add_inhcount = 0;
-		ListCell   *lc2;
-
-		cooked = (CookedConstraint *) list_nth(old_notnulls, outerpos);
-		Assert(cooked->contype == CONSTR_NOTNULL);
-
-		/*
-		 * Preserve the first non-conflicting constraint name we come across,
-		 * if any
-		 */
-		if (conname == NULL && cooked->name)
-			conname = cooked->name;
-
-		for (int restpos = outerpos + 1; restpos < list_length(old_notnulls);)
-		{
-			CookedConstraint *other;
-
-			other = (CookedConstraint *) list_nth(old_notnulls, restpos);
-			if (other->attnum == cooked->attnum)
-			{
-				if (conname == NULL && other->name)
-					conname = other->name;
-
-				add_inhcount++;
-				old_notnulls = list_delete_nth_cell(old_notnulls, restpos);
-			}
-			else
-				restpos++;
-		}
-
-		/* If we got a name, make sure it isn't one we've already used */
-		if (conname != NULL)
-		{
-			foreach(lc2, nnnames)
-			{
-				if (strcmp(lfirst(lc2), conname) == 0)
-				{
-					conname = NULL;
-					break;
-				}
-			}
-		}
-
-		/* and choose a name, if needed */
-		if (conname == NULL)
-			conname = ChooseConstraintName(RelationGetRelationName(rel),
-										   get_attname(RelationGetRelid(rel),
-													   cooked->attnum, false),
-										   "not_null",
-										   RelationGetNamespace(rel),
-										   nnnames);
-		nnnames = lappend(nnnames, conname);
-
-		StoreRelNotNull(rel, conname, cooked->attnum, true,
-						cooked->is_local, cooked->inhcount + add_inhcount,
-						cooked->is_no_inherit);
-
-		nncols = lappend_int(nncols, cooked->attnum);
-	}
-
-	return nncols;
 }
 
 /*

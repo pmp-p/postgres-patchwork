@@ -3,7 +3,7 @@
  * execPartition.c
  *	  Support routines for partitioning.
  *
- * Portions Copyright (c) 1996-2024, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2023, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -16,12 +16,15 @@
 #include "access/table.h"
 #include "access/tableam.h"
 #include "catalog/partition.h"
+#include "catalog/pg_inherits.h"
+#include "catalog/pg_type.h"
 #include "executor/execPartition.h"
 #include "executor/executor.h"
 #include "executor/nodeModifyTable.h"
 #include "foreign/fdwapi.h"
 #include "mb/pg_wchar.h"
 #include "miscadmin.h"
+#include "nodes/makefuncs.h"
 #include "partitioning/partbounds.h"
 #include "partitioning/partdesc.h"
 #include "partitioning/partprune.h"
@@ -358,7 +361,7 @@ ExecFindPartition(ModifyTableState *mtstate,
 				if (rri)
 				{
 					/* Verify this ResultRelInfo allows INSERTs */
-					CheckValidResultRel(rri, CMD_INSERT, NIL);
+					CheckValidResultRel(rri, CMD_INSERT);
 
 					/*
 					 * Initialize information needed to insert this and
@@ -524,7 +527,7 @@ ExecInitPartitionInfo(ModifyTableState *mtstate, EState *estate,
 	 * partition-key becomes a DELETE+INSERT operation, so this check is still
 	 * required when the operation is CMD_UPDATE.
 	 */
-	CheckValidResultRel(leaf_part_rri, CMD_INSERT, NIL);
+	CheckValidResultRel(leaf_part_rri, CMD_INSERT);
 
 	/*
 	 * Open partition indices.  The user may have asked to check for conflicts
@@ -609,8 +612,8 @@ ExecInitPartitionInfo(ModifyTableState *mtstate, EState *estate,
 	 * Build the RETURNING projection for the partition.  Note that we didn't
 	 * build the returningList for partitions within the planner, but simple
 	 * translation of varattnos will suffice.  This only occurs for the INSERT
-	 * case or in the case of UPDATE/MERGE tuple routing where we didn't find
-	 * a result rel to reuse.
+	 * case or in the case of UPDATE tuple routing where we didn't find a
+	 * result rel to reuse.
 	 */
 	if (node && node->returningLists != NIL)
 	{
@@ -619,13 +622,11 @@ ExecInitPartitionInfo(ModifyTableState *mtstate, EState *estate,
 		List	   *returningList;
 
 		/* See the comment above for WCO lists. */
+		/* (except no RETURNING support for MERGE yet) */
 		Assert((node->operation == CMD_INSERT &&
 				list_length(node->returningLists) == 1 &&
 				list_length(node->resultRelations) == 1) ||
 			   (node->operation == CMD_UPDATE &&
-				list_length(node->returningLists) ==
-				list_length(node->resultRelations)) ||
-			   (node->operation == CMD_MERGE &&
 				list_length(node->returningLists) ==
 				list_length(node->resultRelations)));
 
@@ -880,7 +881,6 @@ ExecInitPartitionInfo(ModifyTableState *mtstate, EState *estate,
 		List	   *firstMergeActionList = linitial(node->mergeActionLists);
 		ListCell   *lc;
 		ExprContext *econtext = mtstate->ps.ps_ExprContext;
-		Node	   *joinCondition;
 
 		if (part_attmap == NULL)
 			part_attmap =
@@ -891,31 +891,23 @@ ExecInitPartitionInfo(ModifyTableState *mtstate, EState *estate,
 		if (unlikely(!leaf_part_rri->ri_projectNewInfoValid))
 			ExecInitMergeTupleSlots(mtstate, leaf_part_rri);
 
-		/* Initialize state for join condition checking. */
-		joinCondition =
-			map_variable_attnos(linitial(node->mergeJoinConditions),
-								firstVarno, 0,
-								part_attmap,
-								RelationGetForm(partrel)->reltype,
-								&found_whole_row);
-		/* We ignore the value of found_whole_row. */
-		leaf_part_rri->ri_MergeJoinCondition =
-			ExecInitQual((List *) joinCondition, &mtstate->ps);
-
 		foreach(lc, firstMergeActionList)
 		{
 			/* Make a copy for this relation to be safe.  */
 			MergeAction *action = copyObject(lfirst(lc));
 			MergeActionState *action_state;
+			List	  **list;
 
 			/* Generate the action's state for this relation */
 			action_state = makeNode(MergeActionState);
 			action_state->mas_action = action;
 
 			/* And put the action in the appropriate list */
-			leaf_part_rri->ri_MergeActions[action->matchKind] =
-				lappend(leaf_part_rri->ri_MergeActions[action->matchKind],
-						action_state);
+			if (action->matched)
+				list = &leaf_part_rri->ri_matchedMergeAction;
+			else
+				list = &leaf_part_rri->ri_notMatchedMergeAction;
+			*list = lappend(*list, action_state);
 
 			switch (action->commandType)
 			{

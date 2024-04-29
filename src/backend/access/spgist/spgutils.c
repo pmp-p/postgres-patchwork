@@ -4,7 +4,7 @@
  *	  various support functions for SP-GiST
  *
  *
- * Portions Copyright (c) 1996-2024, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2023, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -28,11 +28,11 @@
 #include "parser/parse_coerce.h"
 #include "storage/bufmgr.h"
 #include "storage/indexfsm.h"
+#include "storage/lmgr.h"
+#include "utils/builtins.h"
 #include "utils/catcache.h"
-#include "utils/fmgrprotos.h"
 #include "utils/index_selfuncs.h"
 #include "utils/lsyscache.h"
-#include "utils/rel.h"
 #include "utils/syscache.h"
 
 
@@ -60,7 +60,6 @@ spghandler(PG_FUNCTION_ARGS)
 	amroutine->amclusterable = false;
 	amroutine->ampredlocks = false;
 	amroutine->amcanparallel = false;
-	amroutine->amcanbuildparallel = false;
 	amroutine->amcaninclude = true;
 	amroutine->amusemaintenanceworkmem = false;
 	amroutine->amsummarizing = false;
@@ -71,7 +70,6 @@ spghandler(PG_FUNCTION_ARGS)
 	amroutine->ambuild = spgbuild;
 	amroutine->ambuildempty = spgbuildempty;
 	amroutine->aminsert = spginsert;
-	amroutine->aminsertcleanup = NULL;
 	amroutine->ambulkdelete = spgbulkdelete;
 	amroutine->amvacuumcleanup = spgvacuumcleanup;
 	amroutine->amcanreturn = spgcanreturn;
@@ -797,7 +795,7 @@ memcpyInnerDatum(void *target, SpGistTypeDesc *att, Datum datum)
  */
 Size
 SpGistGetLeafTupleSize(TupleDesc tupleDescriptor,
-					   const Datum *datums, const bool *isnulls)
+					   Datum *datums, bool *isnulls)
 {
 	Size		size;
 	Size		data_size;
@@ -850,7 +848,7 @@ SpGistGetLeafTupleSize(TupleDesc tupleDescriptor,
  */
 SpGistLeafTuple
 spgFormLeafTuple(SpGistState *state, ItemPointer heapPtr,
-				 const Datum *datums, const bool *isnulls)
+				 Datum *datums, bool *isnulls)
 {
 	SpGistLeafTuple tup;
 	TupleDesc	tupleDescriptor = state->leafTupDesc;

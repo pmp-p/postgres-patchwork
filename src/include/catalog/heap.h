@@ -4,7 +4,7 @@
  *	  prototypes for functions in backend/catalog/heap.c
  *
  *
- * Portions Copyright (c) 1996-2024, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2023, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/catalog/heap.h
@@ -34,11 +34,10 @@ typedef struct RawColumnDefault
 
 typedef struct CookedConstraint
 {
-	ConstrType	contype;		/* CONSTR_DEFAULT, CONSTR_CHECK,
-								 * CONSTR_NOTNULL */
+	ConstrType	contype;		/* CONSTR_DEFAULT or CONSTR_CHECK */
 	Oid			conoid;			/* constr OID if created, otherwise Invalid */
 	char	   *name;			/* name, or NULL if none */
-	AttrNumber	attnum;			/* which attr (only for NOTNULL, DEFAULT) */
+	AttrNumber	attnum;			/* which attr (only for DEFAULT) */
 	Node	   *expr;			/* transformed default or check expr */
 	bool		skip_validation;	/* skip validation? (only for CHECK) */
 	bool		is_local;		/* constraint has local (non-inherited) def */
@@ -98,7 +97,7 @@ extern List *heap_truncate_find_FKs(List *relationIds);
 extern void InsertPgAttributeTuples(Relation pg_attribute_rel,
 									TupleDesc tupdesc,
 									Oid new_rel_oid,
-									const FormExtraData_pg_attribute tupdesc_extra[],
+									Datum *attoptions,
 									CatalogIndexState indstate);
 
 extern void InsertPgClassTuple(Relation pg_class_desc,
@@ -114,9 +113,6 @@ extern List *AddRelationNewConstraints(Relation rel,
 									   bool is_local,
 									   bool is_internal,
 									   const char *queryString);
-extern List *AddRelationNotNullConstraints(Relation rel,
-										   List *constraints,
-										   List *additional_notnulls);
 
 extern void RelationClearMissing(Relation rel);
 extern void SetAttrMissing(Oid relid, char *attname, char *value);

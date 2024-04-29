@@ -749,7 +749,7 @@ select string_agg(v, decode('ee', 'hex')) from bytea_test_table;
 drop table bytea_test_table;
 
 -- Test parallel string_agg and array_agg
-create table pagg_test (x int, y int) with (autovacuum_enabled = off);
+create table pagg_test (x int, y int);
 insert into pagg_test
 select (case x % 4 when 1 then null else x end), x % 10
 from generate_series(1,5000) x;
@@ -1180,100 +1180,6 @@ CREATE AGGREGATE balk(int4)
 SELECT balk(hundred) FROM tenk1;
 
 ROLLBACK;
-
--- GROUP BY optimization by reordering GROUP BY clauses
-CREATE TABLE btg AS SELECT
-  i % 10 AS x,
-  i % 10 AS y,
-  'abc' || i % 10 AS z,
-  i AS w
-FROM generate_series(1, 100) AS i;
-CREATE INDEX btg_x_y_idx ON btg(x, y);
-ANALYZE btg;
-
-SET enable_hashagg = off;
-SET enable_seqscan = off;
-
--- Utilize the ordering of index scan to avoid a Sort operation
-EXPLAIN (COSTS OFF)
-SELECT count(*) FROM btg GROUP BY y, x;
-
--- Engage incremental sort
-EXPLAIN (COSTS OFF)
-SELECT count(*) FROM btg GROUP BY z, y, w, x;
-
--- Utilize the ordering of subquery scan to avoid a Sort operation
-EXPLAIN (COSTS OFF) SELECT count(*)
-FROM (SELECT * FROM btg ORDER BY x, y, w, z) AS q1
-GROUP BY w, x, z, y;
-
--- Utilize the ordering of merge join to avoid a full Sort operation
-SET enable_hashjoin = off;
-SET enable_nestloop = off;
-EXPLAIN (COSTS OFF)
-SELECT count(*)
-  FROM btg t1 JOIN btg t2 ON t1.z = t2.z AND t1.w = t2.w AND t1.x = t2.x
-  GROUP BY t1.x, t1.y, t1.z, t1.w;
-RESET enable_nestloop;
-RESET enable_hashjoin;
-
--- Should work with and without GROUP-BY optimization
-EXPLAIN (COSTS OFF)
-SELECT count(*) FROM btg GROUP BY w, x, z, y ORDER BY y, x, z, w;
-
--- Utilize incremental sort to make the ORDER BY rule a bit cheaper
-EXPLAIN (COSTS OFF)
-SELECT count(*) FROM btg GROUP BY w, x, y, z ORDER BY x*x, z;
-
--- Test the case where the number of incoming subtree path keys is more than
--- the number of grouping keys.
-CREATE INDEX btg_y_x_w_idx ON btg(y, x, w);
-EXPLAIN (VERBOSE, COSTS OFF)
-SELECT y, x, array_agg(distinct w)
-  FROM btg WHERE y < 0 GROUP BY x, y;
-
--- Ensure that we do not select the aggregate pathkeys instead of the grouping
--- pathkeys
-CREATE TABLE group_agg_pk AS SELECT
-  i % 10 AS x,
-  i % 2 AS y,
-  i % 2 AS z,
-  2 AS w,
-  i % 10 AS f
-FROM generate_series(1,100) AS i;
-ANALYZE group_agg_pk;
-SET enable_nestloop = off;
-SET enable_hashjoin = off;
-
-EXPLAIN (COSTS OFF)
-SELECT avg(c1.f ORDER BY c1.x, c1.y)
-FROM group_agg_pk c1 JOIN group_agg_pk c2 ON c1.x = c2.x
-GROUP BY c1.w, c1.z;
-SELECT avg(c1.f ORDER BY c1.x, c1.y)
-FROM group_agg_pk c1 JOIN group_agg_pk c2 ON c1.x = c2.x
-GROUP BY c1.w, c1.z;
-
-RESET enable_nestloop;
-RESET enable_hashjoin;
-DROP TABLE group_agg_pk;
-
--- Test the case where the ordering of the scan matches the ordering within the
--- aggregate but cannot be found in the group-by list
-CREATE TABLE agg_sort_order (c1 int PRIMARY KEY, c2 int);
-CREATE UNIQUE INDEX agg_sort_order_c2_idx ON agg_sort_order(c2);
-INSERT INTO agg_sort_order SELECT i, i FROM generate_series(1,100)i;
-ANALYZE agg_sort_order;
-
-EXPLAIN (COSTS OFF)
-SELECT array_agg(c1 ORDER BY c2),c2
-FROM agg_sort_order WHERE c2 < 100 GROUP BY c1 ORDER BY 2;
-
-DROP TABLE agg_sort_order CASCADE;
-
-DROP TABLE btg;
-
-RESET enable_hashagg;
-RESET enable_seqscan;
 
 -- Secondly test the case of a parallel aggregate combiner function
 -- returning NULL. For that use normal transition function, but a

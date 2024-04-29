@@ -3,7 +3,7 @@
  * pg_shdepend.c
  *	  routines to support manipulation of the pg_shdepend relation
  *
- * Portions Copyright (c) 1996-2024, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2023, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -33,6 +33,7 @@
 #include "catalog/pg_foreign_server.h"
 #include "catalog/pg_language.h"
 #include "catalog/pg_largeobject.h"
+#include "catalog/pg_largeobject_metadata.h"
 #include "catalog/pg_namespace.h"
 #include "catalog/pg_opclass.h"
 #include "catalog/pg_operator.h"
@@ -47,10 +48,14 @@
 #include "catalog/pg_type.h"
 #include "catalog/pg_user_mapping.h"
 #include "commands/alter.h"
+#include "commands/collationcmds.h"
+#include "commands/conversioncmds.h"
 #include "commands/dbcommands.h"
 #include "commands/defrem.h"
 #include "commands/event_trigger.h"
+#include "commands/extension.h"
 #include "commands/policy.h"
+#include "commands/proclang.h"
 #include "commands/publicationcmds.h"
 #include "commands/schemacmds.h"
 #include "commands/subscriptioncmds.h"
@@ -68,7 +73,7 @@ typedef enum
 {
 	LOCAL_OBJECT,
 	SHARED_OBJECT,
-	REMOTE_OBJECT,
+	REMOTE_OBJECT
 } SharedDependencyObjectType;
 
 typedef struct
@@ -1609,9 +1614,24 @@ shdepReassignOwned(List *roleids, Oid newrole)
 				case DatabaseRelationId:
 				case TSConfigRelationId:
 				case TSDictionaryRelationId:
-					AlterObjectOwner_internal(sdepForm->classid,
-											  sdepForm->objid,
-											  newrole);
+					{
+						Oid			classId = sdepForm->classid;
+						Relation	catalog;
+
+						/*
+						 * For large objects, the catalog to modify is
+						 * pg_largeobject_metadata
+						 */
+						if (classId == LargeObjectRelationId)
+							classId = LargeObjectMetadataRelationId;
+
+						catalog = table_open(classId, RowExclusiveLock);
+
+						AlterObjectOwner_internal(catalog, sdepForm->objid,
+												  newrole);
+
+						table_close(catalog, NoLock);
+					}
 					break;
 
 				default:

@@ -36,8 +36,10 @@ CREATE ROLE <replaceable class="parameter">name</replaceable> [ [ WITH ] <replac
     | [ ENCRYPTED ] PASSWORD '<replaceable class="parameter">password</replaceable>' | PASSWORD NULL
     | VALID UNTIL '<replaceable class="parameter">timestamp</replaceable>'
     | IN ROLE <replaceable class="parameter">role_name</replaceable> [, ...]
+    | IN GROUP <replaceable class="parameter">role_name</replaceable> [, ...]
     | ROLE <replaceable class="parameter">role_name</replaceable> [, ...]
     | ADMIN <replaceable class="parameter">role_name</replaceable> [, ...]
+    | USER <replaceable class="parameter">role_name</replaceable> [, ...]
     | SYSID <replaceable class="parameter">uid</replaceable>
 </synopsis>
  </refsynopsisdiv>
@@ -302,6 +304,15 @@ in sync when changing the above synopsis!
      </varlistentry>
 
      <varlistentry>
+      <term><literal>IN GROUP</literal> <replaceable class="parameter">role_name</replaceable></term>
+      <listitem>
+       <para><literal>IN GROUP</literal> is an obsolete spelling of
+        <literal>IN ROLE</literal>.
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
       <term><literal>ROLE</literal> <replaceable class="parameter">role_name</replaceable></term>
       <listitem>
        <para>
@@ -309,7 +320,7 @@ in sync when changing the above synopsis!
         existing roles to be automatically added as members, with the
         <literal>SET</literal> option enabled. This in effect makes the
         new role a <quote>group</quote>.  Roles named in this clause
-        with the role-level <literal>INHERIT</literal> attribute will have
+        with role-level the <literal>INHERIT</literal> attribute will have
         the <literal>INHERIT</literal> option enabled in the new membership.
         New memberships will have the <literal>ADMIN</literal> option disabled.
        </para>
@@ -324,6 +335,16 @@ in sync when changing the above synopsis!
         <literal>ROLE</literal>, but the named roles are added as members
         of the new role with <literal>ADMIN</literal> enabled, giving
         them the right to grant membership in the new role to others.
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><literal>USER</literal> <replaceable class="parameter">role_name</replaceable></term>
+      <listitem>
+       <para>
+        The <literal>USER</literal> clause is an obsolete spelling of
+        the <literal>ROLE</literal> clause.
        </para>
       </listitem>
      </varlistentry>
@@ -378,7 +399,7 @@ in sync when changing the above synopsis!
   <para>
    The membership grants created by the
    <literal>IN ROLE</literal>, <literal>ROLE</literal>, and <literal>ADMIN</literal>
-   clauses have the role executing this command as the grantor.
+   clauses have the role executing this command as the grantee.
   </para>
 
   <para>
@@ -481,22 +502,6 @@ CREATE ROLE <replaceable class="parameter">name</replaceable> [ WITH ADMIN <repl
    roles with the <literal>NOINHERIT</literal> option, and SQL-standard
    roles as <productname>PostgreSQL</productname> roles with the
    <literal>INHERIT</literal> option.
-  </para>
-
-  <para>
-   The <literal>USER</literal> clause has the same behavior as
-   <literal>ROLE</literal> but has been deprecated:
-<synopsis>
-USER <replaceable class="parameter">role_name</replaceable> [, ...]
-</synopsis>
-  </para>
-
-  <para>
-   The <literal>IN GROUP</literal> clause has the same behavior as <literal>IN
-   ROLE</literal> but has been deprecated:
-<synopsis>
-IN GROUP <replaceable class="parameter">role_name</replaceable> [, ...]
-</synopsis>
   </para>
  </refsect1>
 

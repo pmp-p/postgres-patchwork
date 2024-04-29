@@ -3,7 +3,7 @@
  * origin.c
  *	  Logical replication progress tracking support.
  *
- * Copyright (c) 2013-2024, PostgreSQL Global Development Group
+ * Copyright (c) 2013-2023, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
  *	  src/backend/replication/logical/origin.c
@@ -82,9 +82,10 @@
 #include "miscadmin.h"
 #include "nodes/execnodes.h"
 #include "pgstat.h"
+#include "replication/logical.h"
 #include "replication/origin.h"
-#include "replication/slot.h"
 #include "storage/condition_variable.h"
+#include "storage/copydir.h"
 #include "storage/fd.h"
 #include "storage/ipc.h"
 #include "storage/lmgr.h"
@@ -171,10 +172,9 @@ static ReplicationState *replication_states;
 static ReplicationStateCtl *replication_states_ctl;
 
 /*
- * We keep a pointer to this backend's ReplicationState to avoid having to
- * search the replication_states array in replorigin_session_advance for each
- * remote commit.  (Ownership of a backend's own entry can only be changed by
- * that backend.)
+ * Backend-local, cached element from ReplicationState for use in a backend
+ * replaying remote commits, so we don't have to search ReplicationState for
+ * the backends current RepOriginId.
  */
 static ReplicationState *session_replication_state = NULL;
 
@@ -1056,12 +1056,10 @@ ReplicationOriginExitCleanup(int code, Datum arg)
 {
 	ConditionVariable *cv = NULL;
 
-	if (session_replication_state == NULL)
-		return;
-
 	LWLockAcquire(ReplicationOriginLock, LW_EXCLUSIVE);
 
-	if (session_replication_state->acquired_by == MyProcPid)
+	if (session_replication_state != NULL &&
+		session_replication_state->acquired_by == MyProcPid)
 	{
 		cv = &session_replication_state->origin_cv;
 
@@ -1146,7 +1144,6 @@ replorigin_session_setup(RepOriginId node, int acquired_by)
 
 		/* ok, found slot */
 		session_replication_state = curstate;
-		break;
 	}
 
 

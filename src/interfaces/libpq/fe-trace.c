@@ -3,7 +3,7 @@
  *	fe-trace.c
  *	  functions for libpq protocol tracing
  *
- * Portions Copyright (c) 1996-2024, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2023, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -562,120 +562,110 @@ pqTraceOutputMessage(PGconn *conn, const char *message, bool toServer)
 
 	switch (id)
 	{
-		case PqMsg_ParseComplete:
+		case '1':
 			fprintf(conn->Pfdebug, "ParseComplete");
 			/* No message content */
 			break;
-		case PqMsg_BindComplete:
+		case '2':
 			fprintf(conn->Pfdebug, "BindComplete");
 			/* No message content */
 			break;
-		case PqMsg_CloseComplete:
+		case '3':
 			fprintf(conn->Pfdebug, "CloseComplete");
 			/* No message content */
 			break;
-		case PqMsg_NotificationResponse:
+		case 'A':				/* Notification Response */
 			pqTraceOutputA(conn->Pfdebug, message, &logCursor, regress);
 			break;
-		case PqMsg_Bind:
+		case 'B':				/* Bind */
 			pqTraceOutputB(conn->Pfdebug, message, &logCursor);
 			break;
-		case PqMsg_CopyDone:
+		case 'c':
 			fprintf(conn->Pfdebug, "CopyDone");
 			/* No message content */
 			break;
-		case PqMsg_CommandComplete:
-			/* Close(F) and CommandComplete(B) use the same identifier. */
-			Assert(PqMsg_Close == PqMsg_CommandComplete);
+		case 'C':				/* Close(F) or Command Complete(B) */
 			pqTraceOutputC(conn->Pfdebug, toServer, message, &logCursor);
 			break;
-		case PqMsg_CopyData:
+		case 'd':				/* Copy Data */
 			/* Drop COPY data to reduce the overhead of logging. */
 			break;
-		case PqMsg_Describe:
-			/* Describe(F) and DataRow(B) use the same identifier. */
-			Assert(PqMsg_Describe == PqMsg_DataRow);
+		case 'D':				/* Describe(F) or Data Row(B) */
 			pqTraceOutputD(conn->Pfdebug, toServer, message, &logCursor);
 			break;
-		case PqMsg_Execute:
-			/* Execute(F) and ErrorResponse(B) use the same identifier. */
-			Assert(PqMsg_Execute == PqMsg_ErrorResponse);
+		case 'E':				/* Execute(F) or Error Response(B) */
 			pqTraceOutputE(conn->Pfdebug, toServer, message, &logCursor,
 						   regress);
 			break;
-		case PqMsg_CopyFail:
+		case 'f':				/* Copy Fail */
 			pqTraceOutputf(conn->Pfdebug, message, &logCursor);
 			break;
-		case PqMsg_FunctionCall:
+		case 'F':				/* Function Call */
 			pqTraceOutputF(conn->Pfdebug, message, &logCursor, regress);
 			break;
-		case PqMsg_CopyInResponse:
+		case 'G':				/* Start Copy In */
 			pqTraceOutputG(conn->Pfdebug, message, &logCursor);
 			break;
-		case PqMsg_Flush:
-			/* Flush(F) and CopyOutResponse(B) use the same identifier */
-			Assert(PqMsg_CopyOutResponse == PqMsg_Flush);
+		case 'H':				/* Flush(F) or Start Copy Out(B) */
 			if (!toServer)
 				pqTraceOutputH(conn->Pfdebug, message, &logCursor);
 			else
 				fprintf(conn->Pfdebug, "Flush");	/* no message content */
 			break;
-		case PqMsg_EmptyQueryResponse:
+		case 'I':
 			fprintf(conn->Pfdebug, "EmptyQueryResponse");
 			/* No message content */
 			break;
-		case PqMsg_BackendKeyData:
+		case 'K':				/* secret key data from the backend */
 			pqTraceOutputK(conn->Pfdebug, message, &logCursor, regress);
 			break;
-		case PqMsg_NoData:
+		case 'n':
 			fprintf(conn->Pfdebug, "NoData");
 			/* No message content */
 			break;
-		case PqMsg_NoticeResponse:
+		case 'N':
 			pqTraceOutputNR(conn->Pfdebug, "NoticeResponse", message,
 							&logCursor, regress);
 			break;
-		case PqMsg_Parse:
+		case 'P':				/* Parse */
 			pqTraceOutputP(conn->Pfdebug, message, &logCursor, regress);
 			break;
-		case PqMsg_Query:
+		case 'Q':				/* Query */
 			pqTraceOutputQ(conn->Pfdebug, message, &logCursor);
 			break;
-		case PqMsg_AuthenticationRequest:
+		case 'R':				/* Authentication */
 			pqTraceOutputR(conn->Pfdebug, message, &logCursor);
 			break;
-		case PqMsg_PortalSuspended:
+		case 's':
 			fprintf(conn->Pfdebug, "PortalSuspended");
 			/* No message content */
 			break;
-		case PqMsg_Sync:
-			/* Parameter Status(B) and Sync(F) use the same identifier */
-			Assert(PqMsg_ParameterStatus == PqMsg_Sync);
+		case 'S':				/* Parameter Status(B) or Sync(F) */
 			if (!toServer)
 				pqTraceOutputS(conn->Pfdebug, message, &logCursor);
 			else
 				fprintf(conn->Pfdebug, "Sync"); /* no message content */
 			break;
-		case PqMsg_ParameterDescription:
+		case 't':				/* Parameter Description */
 			pqTraceOutputt(conn->Pfdebug, message, &logCursor, regress);
 			break;
-		case PqMsg_RowDescription:
+		case 'T':				/* Row Description */
 			pqTraceOutputT(conn->Pfdebug, message, &logCursor, regress);
 			break;
-		case PqMsg_NegotiateProtocolVersion:
+		case 'v':				/* Negotiate Protocol Version */
 			pqTraceOutputv(conn->Pfdebug, message, &logCursor);
 			break;
-		case PqMsg_FunctionCallResponse:
+		case 'V':				/* Function Call response */
 			pqTraceOutputV(conn->Pfdebug, message, &logCursor);
 			break;
-		case PqMsg_CopyBothResponse:
+		case 'W':				/* Start Copy Both */
 			pqTraceOutputW(conn->Pfdebug, message, &logCursor, length);
 			break;
-		case PqMsg_Terminate:
+		case 'X':
 			fprintf(conn->Pfdebug, "Terminate");
 			/* No message content */
 			break;
-		case PqMsg_ReadyForQuery:
+		case 'Z':				/* Ready For Query */
 			pqTraceOutputZ(conn->Pfdebug, message, &logCursor);
 			break;
 		default:

@@ -10,7 +10,7 @@
  * only here to simplify syncing this file with scan.l.
  *
  *
- * Portions Copyright (c) 1996-2024, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2023, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -69,20 +69,15 @@ char *token_start;
 static int state_before_str_start;
 static int state_before_str_stop;
 
-/*
- * State for handling include files and macro expansion.  We use a new
- * flex input buffer for each level of include or macro, and create a
- * struct _yy_buffer to remember the previous level.  There is not a struct
- * for the currently active input source; that state is kept in the global
- * variables YY_CURRENT_BUFFER, yylineno, and input_filename.
- */
-static struct _yy_buffer
+struct _yy_buffer
 {
 	YY_BUFFER_STATE		buffer;
 	long				lineno;
 	char			   *filename;
 	struct _yy_buffer  *next;
 } *yy_buffer = NULL;
+
+static char *old;
 
 /*
  * Vars for handling ifdef/elif/endif constructs.  preproc_tos is the current
@@ -185,16 +180,16 @@ static struct _if_value
  * versions of Postgres failed to recognize -- as a comment if the input
  * did not end with a newline.
  *
- * non_newline_space tracks all space characters except newlines.
+ * XXX perhaps \f (formfeed) should be treated as a newline as well?
  *
  * XXX if you change the set of whitespace characters, fix ecpg_isspace()
  * to agree.
  */
 
-space				[ \t\n\r\f\v]
-non_newline_space	[ \t\f\v]
-newline				[\n\r]
-non_newline			[^\n\r]
+space			[ \t\n\r\f]
+horiz_space		[ \t\f]
+newline			[\n\r]
+non_newline		[^\n\r]
 
 comment			("--"{non_newline}*)
 
@@ -207,8 +202,8 @@ whitespace		({space}+|{comment})
  * it, whereas {whitespace} should generally have a * after it...
  */
 
-non_newline_whitespace	({non_newline_space}|{comment})
-whitespace_with_newline	({non_newline_whitespace}*{newline}{whitespace}*)
+horiz_whitespace		({horiz_space}|{comment})
+whitespace_with_newline	({horiz_whitespace}*{newline}{whitespace}*)
 
 quote			'
 /* If we see {quote} then {quotecontinue}, the quoted string continues */
@@ -449,8 +444,6 @@ cppline			{space}*#([^i][A-Za-z]*|{if}|{ifdef}|{ifndef}|{import})((\/\*[^*/]*\*+
 
 %{
 		/* code to execute during start of each call of yylex() */
-		char *newdefsymbol = NULL;
-
 		token_start = NULL;
 %}
 
@@ -1017,7 +1010,6 @@ cppline			{space}*#([^i][A-Za-z]*|{if}|{ifdef}|{ifndef}|{import})((\/\*[^*/]*\*+
 				}
 
 {identifier}	{
-					/* First check to see if it's a define symbol to expand */
 					if (!isdefine())
 					{
 						int		kwvalue;
@@ -1206,23 +1198,17 @@ cppline			{space}*#([^i][A-Za-z]*|{if}|{ifdef}|{ifndef}|{import})((\/\*[^*/]*\*+
 					yytext[i+1] = '\0';
 
 
-					/* Find and unset any matching define; should be only 1 */
-					for (ptr = defines; ptr; ptr2 = ptr, ptr = ptr->next)
+					for (ptr = defines; ptr != NULL; ptr2 = ptr, ptr = ptr->next)
 					{
-						if (strcmp(yytext, ptr->name) == 0)
+						if (strcmp(yytext, ptr->olddef) == 0)
 						{
-							free(ptr->value);
-							ptr->value = NULL;
-							/* We cannot forget it if there's a cmdvalue */
-							if (ptr->cmdvalue == NULL)
-							{
-								if (ptr2 == NULL)
-									defines = ptr->next;
-								else
-									ptr2->next = ptr->next;
-								free(ptr->name);
-								free(ptr);
-							}
+							if (ptr2 == NULL)
+								defines = ptr->next;
+							else
+								ptr2->next = ptr->next;
+							free(ptr->newdef);
+							free(ptr->olddef);
+							free(ptr);
 							break;
 						}
 					}
@@ -1427,17 +1413,11 @@ cppline			{space}*#([^i][A-Za-z]*|{if}|{ifdef}|{ifndef}|{import})((\/\*[^*/]*\*+
 							;
 						yytext[i+1] = '\0';
 
-						/* Does a definition exist? */
-						for (defptr = defines; defptr; defptr = defptr->next)
-						{
-							if (strcmp(yytext, defptr->name) == 0)
-							{
-								/* Found it, but is it currently undefined? */
-								if (defptr->value == NULL)
-									defptr = NULL; /* pretend it's not found */
-								break;
-							}
-						}
+						for (defptr = defines;
+							 defptr != NULL &&
+							 strcmp(yytext, defptr->olddef) != 0;
+							 defptr = defptr->next)
+							/* skip */ ;
 
 						this_active = (defptr ? ifcond : !ifcond);
 						stacked_if_value[preproc_tos].active =
@@ -1458,7 +1438,7 @@ cppline			{space}*#([^i][A-Za-z]*|{if}|{ifdef}|{ifndef}|{import})((\/\*[^*/]*\*+
 				yyterminate();
 			}
 <def_ident>{identifier} {
-				newdefsymbol = mm_strdup(yytext);
+				old = mm_strdup(yytext);
 				BEGIN(def);
 				startlit();
 			}
@@ -1467,31 +1447,26 @@ cppline			{space}*#([^i][A-Za-z]*|{if}|{ifdef}|{ifndef}|{import})((\/\*[^*/]*\*+
 				yyterminate();
 			}
 <def>{space}*";"	{
-						struct _defines *ptr;
+						struct _defines *ptr, *this;
 
-						/* Does it already exist? */
 						for (ptr = defines; ptr != NULL; ptr = ptr->next)
 						{
-							if (strcmp(newdefsymbol, ptr->name) == 0)
-							{
-								free(ptr->value);
-								ptr->value = mm_strdup(literalbuf);
-								/* Don't leak newdefsymbol */
-								free(newdefsymbol);
-								break;
-							}
+							 if (strcmp(old, ptr->olddef) == 0)
+							 {
+								free(ptr->newdef);
+								ptr->newdef = mm_strdup(literalbuf);
+							 }
 						}
 						if (ptr == NULL)
 						{
-							/* Not present, make a new entry */
-							ptr = (struct _defines *) mm_alloc(sizeof(struct _defines));
+							this = (struct _defines *) mm_alloc(sizeof(struct _defines));
 
-							ptr->name = newdefsymbol;
-							ptr->value = mm_strdup(literalbuf);
-							ptr->cmdvalue = NULL;
-							ptr->used = NULL;
-							ptr->next = defines;
-							defines = ptr;
+							/* initial definition */
+							this->olddef = old;
+							this->newdef = mm_strdup(literalbuf);
+							this->next = defines;
+							this->used = NULL;
+							defines = this;
 						}
 
 						BEGIN(C);
@@ -1508,7 +1483,6 @@ cppline			{space}*#([^i][A-Za-z]*|{if}|{ifdef}|{ifndef}|{import})((\/\*[^*/]*\*+
 <<EOF>>				{
 					if (yy_buffer == NULL)
 					{
-						/* No more input */
 						if (preproc_tos > 0)
 						{
 							preproc_tos = 0;
@@ -1518,20 +1492,16 @@ cppline			{space}*#([^i][A-Za-z]*|{if}|{ifdef}|{ifndef}|{import})((\/\*[^*/]*\*+
 					}
 					else
 					{
-						/* Revert to previous input source */
 						struct _yy_buffer *yb = yy_buffer;
 						int i;
 						struct _defines *ptr;
 
-						/* Check to see if we are exiting a macro value */
 						for (ptr = defines; ptr; ptr = ptr->next)
-						{
 							if (ptr->used == yy_buffer)
 							{
 								ptr->used = NULL;
-								break; /* there can't be multiple matches */
+								break;
 							}
-						}
 
 						if (yyin != NULL)
 							fclose(yyin);
@@ -1751,30 +1721,20 @@ ecpg_isspace(char ch)
 		ch == '\t' ||
 		ch == '\n' ||
 		ch == '\r' ||
-		ch == '\f' ||
-		ch == '\v')
+		ch == '\f')
 		return true;
 	return false;
 }
 
-/*
- * If yytext matches a define symbol, begin scanning the symbol's value
- * and return true
- */
-static bool
-isdefine(void)
+static bool isdefine(void)
 {
 	struct _defines *ptr;
 
 	/* is it a define? */
 	for (ptr = defines; ptr; ptr = ptr->next)
 	{
-		/* notice we do not match anything being actively expanded */
-		if (strcmp(yytext, ptr->name) == 0 &&
-			ptr->value != NULL &&
-			ptr->used == NULL)
+		if (strcmp(yytext, ptr->olddef) == 0 && ptr->used == NULL)
 		{
-			/* Save state associated with the current buffer */
 			struct _yy_buffer *yb;
 
 			yb = mm_alloc(sizeof(struct _yy_buffer));
@@ -1783,17 +1743,10 @@ isdefine(void)
 			yb->lineno = yylineno;
 			yb->filename = mm_strdup(input_filename);
 			yb->next = yy_buffer;
-			yy_buffer = yb;
 
-			/* Mark symbol as being actively expanded */
-			ptr->used = yb;
+			ptr->used = yy_buffer = yb;
 
-			/*
-			 * We use yy_scan_string which will copy the value, so there's
-			 * no need to worry about a possible undef happening while we
-			 * are still scanning it.
-			 */
-			yy_scan_string(ptr->value);
+			yy_scan_string(ptr->newdef);
 			return true;
 		}
 	}
@@ -1801,12 +1754,7 @@ isdefine(void)
 	return false;
 }
 
-/*
- * Handle replacement of INFORMIX built-in defines.  This works just
- * like isdefine() except for the source of the string to scan.
- */
-static bool
-isinformixdefine(void)
+static bool isinformixdefine(void)
 {
 	const char *new = NULL;
 

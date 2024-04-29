@@ -3,7 +3,7 @@
  * tsquery.c
  *	  I/O functions for tsquery
  *
- * Portions Copyright (c) 1996-2024, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2023, PostgreSQL Global Development Group
  *
  *
  * IDENTIFICATION
@@ -41,7 +41,7 @@ typedef enum
 {
 	WAITOPERAND = 1,
 	WAITOPERATOR = 2,
-	WAITFIRSTOPERAND = 3,
+	WAITFIRSTOPERAND = 3
 } ts_parserstate;
 
 /*
@@ -54,7 +54,7 @@ typedef enum
 	PT_VAL = 2,
 	PT_OPR = 3,
 	PT_OPEN = 4,
-	PT_CLOSE = 5,
+	PT_CLOSE = 5
 } ts_tokentype;
 
 /*

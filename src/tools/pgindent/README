@@ -104,6 +104,7 @@ the comment block with some dashes:
 
 	/*----------
 	 * Text here will not be touched by pgindent.
+	 *----------
 	 */
 
 Odd spacing around typedef names might indicate an incomplete typedefs list.

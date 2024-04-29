@@ -20,7 +20,6 @@ GETTEXT_FILES    = $(FRONTEND_COMMON_GETTEXT_FILES) \
                    pg_dumpall.c \
                    parallel.c \
                    parallel.h \
-                   filter.c \
                    pg_backup_utils.c \
                    pg_backup_utils.h \
                    ../../common/compression.c \

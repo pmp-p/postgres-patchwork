@@ -1,8 +1,8 @@
 
-# Copyright (c) 2021-2024, PostgreSQL Global Development Group
+# Copyright (c) 2021-2023, PostgreSQL Global Development Group
 
 use strict;
-use warnings FATAL => 'all';
+use warnings;
 
 use File::Copy;
 
@@ -33,7 +33,7 @@ my $ddir = $node->data_dir;
 # install certificate and protected key
 copy("server.crt", $ddir);
 copy("server.key", $ddir);
-chmod 0600, "$ddir/server.key" or die $!;
+chmod 0600, "$ddir/server.key";
 
 $node->start;
 

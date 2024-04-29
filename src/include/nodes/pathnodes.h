@@ -6,7 +6,7 @@
  * We don't support copying RelOptInfo, IndexOptInfo, or Path nodes.
  * There are some subsidiary structs that are useful to copy, though.
  *
- * Portions Copyright (c) 1996-2024, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2023, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/nodes/pathnodes.h
@@ -76,7 +76,7 @@ typedef enum UpperRelationKind
 	UPPERREL_PARTIAL_DISTINCT,	/* result of partial "SELECT DISTINCT", if any */
 	UPPERREL_DISTINCT,			/* result of "SELECT DISTINCT", if any */
 	UPPERREL_ORDERED,			/* result of ORDER BY, if any */
-	UPPERREL_FINAL,				/* result of any remaining top-level actions */
+	UPPERREL_FINAL				/* result of any remaining top-level actions */
 	/* NB: UPPERREL_FINAL must be last enum entry; it's used to size arrays */
 } UpperRelationKind;
 
@@ -103,9 +103,6 @@ typedef struct PlannerGlobal
 
 	/* Plans for SubPlan nodes */
 	List	   *subplans;
-
-	/* Paths from which the SubPlan Plans were made */
-	List	   *subpaths;
 
 	/* PlannerInfos for SubPlan nodes */
 	List	   *subroots pg_node_attr(read_write_ignore);
@@ -400,8 +397,6 @@ struct PlannerInfo
 	List	   *distinct_pathkeys;
 	/* sortClause pathkeys, if any */
 	List	   *sort_pathkeys;
-	/* set operator pathkeys, if any */
-	List	   *setop_pathkeys;
 
 	/* Canonicalised partition schemes used in the query. */
 	List	   *part_schemes pg_node_attr(read_write_ignore);
@@ -724,7 +719,7 @@ typedef struct PartitionSchemeData *PartitionScheme;
  * populate these fields, for base rels; but someday they might be used for
  * join rels too:
  *
- *		unique_for_rels - list of UniqueRelInfo, each one being a set of other
+ *		unique_for_rels - list of Relid sets, each one being a set of other
  *					rels for which this one has been proven unique
  *		non_unique_for_rels - list of Relid sets, each one being a set of
  *					other rels for which we have tried and failed to prove
@@ -819,7 +814,7 @@ typedef enum RelOptKind
 	RELOPT_OTHER_MEMBER_REL,
 	RELOPT_OTHER_JOINREL,
 	RELOPT_UPPER_REL,
-	RELOPT_OTHER_UPPER_REL,
+	RELOPT_OTHER_UPPER_REL
 } RelOptKind;
 
 /*
@@ -918,12 +913,6 @@ typedef struct RelOptInfo
 	Relids	   *attr_needed pg_node_attr(read_write_ignore);
 	/* array indexed [min_attr .. max_attr] */
 	int32	   *attr_widths pg_node_attr(read_write_ignore);
-
-	/*
-	 * Zero-based set containing attnums of NOT NULL columns.  Not populated
-	 * for rels corresponding to non-partitioned inh==true RTEs.
-	 */
-	Bitmapset  *notnullattnums;
 	/* relids of outer joins that can null this baserel */
 	Relids		nulling_relids;
 	/* LATERAL Vars and PHVs referenced by rel */
@@ -963,7 +952,7 @@ typedef struct RelOptInfo
 	/*
 	 * cache space for remembering if we have proven this relation unique
 	 */
-	/* known unique for these other relid set(s) given in UniqueRelInfo(s) */
+	/* known unique for these other relid set(s) */
 	List	   *unique_for_rels;
 	/* known not unique for these set(s) */
 	List	   *non_unique_for_rels;
@@ -1468,16 +1457,6 @@ typedef struct PathKey
 } PathKey;
 
 /*
- * Combines the information about pathkeys and the associated clauses.
- */
-typedef struct PathKeyInfo
-{
-	NodeTag		type;
-	List	   *pathkeys;
-	List	   *clauses;
-} PathKeyInfo;
-
-/*
  * VolatileFunctionStatus -- allows nodes to cache their
  * contain_volatile_functions properties. VOLATILITY_UNKNOWN means not yet
  * determined.
@@ -1486,7 +1465,7 @@ typedef enum VolatileFunctionStatus
 {
 	VOLATILITY_UNKNOWN = 0,
 	VOLATILITY_VOLATILE,
-	VOLATILITY_NOVOLATILE,
+	VOLATILITY_NOVOLATILE
 } VolatileFunctionStatus;
 
 /*
@@ -1843,10 +1822,6 @@ typedef struct SubqueryScanPath
  * ForeignPath represents a potential scan of a foreign table, foreign join
  * or foreign upper-relation.
  *
- * In the case of a foreign join, fdw_restrictinfo stores the RestrictInfos to
- * apply to the join, which are used by createplan.c to get pseudoconstant
- * clauses evaluated as one-time quals in a gating Result plan node.
- *
  * fdw_private stores FDW private data about the scan.  While fdw_private is
  * not actually touched by the core code during normal operations, it's
  * generally a good idea to use a representation that can be dumped by
@@ -1857,7 +1832,6 @@ typedef struct ForeignPath
 {
 	Path		path;
 	Path	   *fdw_outerpath;
-	List	   *fdw_restrictinfo;
 	List	   *fdw_private;
 } ForeignPath;
 
@@ -1875,10 +1849,6 @@ typedef struct ForeignPath
  * relation by set_rel_pathlist_hook or set_join_pathlist_hook functions,
  * respectively.
  *
- * In the case of a table join, custom_restrictinfo stores the RestrictInfos
- * to apply to the join, which are used by createplan.c to get pseudoconstant
- * clauses evaluated as one-time quals in a gating Result plan node.
- *
  * Core code must avoid assuming that the CustomPath is only as large as
  * the structure declared here; providers are allowed to make it the first
  * element in a larger structure.  (Since the planner never copies Paths,
@@ -1895,7 +1865,6 @@ typedef struct CustomPath
 	uint32		flags;			/* mask of CUSTOMPATH_* flags, see
 								 * nodes/extensible.h */
 	List	   *custom_paths;	/* list of child Path nodes, if any */
-	List	   *custom_restrictinfo;
 	List	   *custom_private;
 	const struct CustomPathMethods *methods;
 } CustomPath;
@@ -2008,7 +1977,7 @@ typedef enum UniquePathMethod
 {
 	UNIQUE_PATH_NOOP,			/* input is known unique already */
 	UNIQUE_PATH_HASH,			/* use hashing */
-	UNIQUE_PATH_SORT,			/* use sorting */
+	UNIQUE_PATH_SORT			/* use sorting */
 } UniquePathMethod;
 
 typedef struct UniquePath
@@ -2376,8 +2345,6 @@ typedef struct ModifyTablePath
 	int			epqParam;		/* ID of Param for EvalPlanQual re-eval */
 	List	   *mergeActionLists;	/* per-target-table lists of actions for
 									 * MERGE */
-	List	   *mergeJoinConditions;	/* per-target-table join conditions
-										 * for MERGE */
 } ModifyTablePath;
 
 /*
@@ -2611,10 +2578,7 @@ typedef struct RestrictInfo
 	 * 2. If we manufacture a commuted version of a qual to use as an index
 	 * condition, it copies the original's rinfo_serial, since it is in
 	 * practice the same condition.
-	 * 3. If we reduce a qual to constant-FALSE, the new constant-FALSE qual
-	 * copies the original's rinfo_serial, since it is in practice the same
-	 * condition.
-	 * 4. RestrictInfos made for a child relation copy their parent's
+	 * 3. RestrictInfos made for a child relation copy their parent's
 	 * rinfo_serial.  Likewise, when an EquivalenceClass makes a derived
 	 * equality clause for a child relation, it copies the rinfo_serial of
 	 * the matching equality clause for the parent.  This allows detection
@@ -2865,9 +2829,6 @@ typedef struct PlaceHolderVar
  * cost estimation purposes it is sometimes useful to know the join size under
  * plain innerjoin semantics.  Note that lhs_strict and the semi_xxx fields
  * are not set meaningfully within such structs.
- *
- * We also create transient SpecialJoinInfos for child joins during
- * partitionwise join planning, which are also not present in join_info_list.
  */
 #ifndef HAVE_SPECIALJOININFO_TYPEDEF
 typedef struct SpecialJoinInfo SpecialJoinInfo;
@@ -3257,7 +3218,7 @@ typedef enum
 {
 	PARTITIONWISE_AGGREGATE_NONE,
 	PARTITIONWISE_AGGREGATE_FULL,
-	PARTITIONWISE_AGGREGATE_PARTIAL,
+	PARTITIONWISE_AGGREGATE_PARTIAL
 } PartitionwiseAggregateType;
 
 /*
@@ -3419,36 +3380,5 @@ typedef struct AggTransInfo
 	Datum		initValue pg_node_attr(read_write_ignore);
 	bool		initValueIsNull;
 } AggTransInfo;
-
-/*
- * UniqueRelInfo caches a fact that a relation is unique when being joined
- * to other relation(s).
- */
-typedef struct UniqueRelInfo
-{
-	pg_node_attr(no_copy_equal, no_read, no_query_jumble)
-
-	NodeTag		type;
-
-	/*
-	 * The relation in consideration is unique when being joined with this set
-	 * of other relation(s).
-	 */
-	Relids		outerrelids;
-
-	/*
-	 * The relation in consideration is unique when considering only clauses
-	 * suitable for self-join (passed split_selfjoin_quals()).
-	 */
-	bool		self_join;
-
-	/*
-	 * Additional clauses from a baserestrictinfo list that were used to prove
-	 * the uniqueness.   We cache it for the self-join checking procedure: a
-	 * self-join can be removed if the outer relation contains strictly the
-	 * same set of clauses.
-	 */
-	List	   *extra_clauses;
-} UniqueRelInfo;
 
 #endif							/* PATHNODES_H */

@@ -1,4 +1,4 @@
-# Copyright (c) 2022-2024, PostgreSQL Global Development Group
+# Copyright (c) 2022-2023, PostgreSQL Global Development Group
 
 pg_config_ext = configure_file(
   input: 'pg_config_ext.h.meson',
@@ -94,7 +94,6 @@ install_headers(
 
 install_headers(
   'libpq/pqcomm.h',
-  'libpq/protocol.h',
   install_dir: dir_include_internal / 'libpq',
 )
 

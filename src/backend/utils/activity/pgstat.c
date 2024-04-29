@@ -83,7 +83,7 @@
  * specific kinds of stats.
  *
  *
- * Copyright (c) 2001-2024, PostgreSQL Global Development Group
+ * Copyright (c) 2001-2023, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
  *	  src/backend/utils/activity/pgstat.c
@@ -93,6 +93,7 @@
 
 #include <unistd.h>
 
+#include "access/transam.h"
 #include "access/xact.h"
 #include "lib/dshash.h"
 #include "pgstat.h"
@@ -100,6 +101,8 @@
 #include "storage/fd.h"
 #include "storage/ipc.h"
 #include "storage/lwlock.h"
+#include "storage/pg_shmem.h"
+#include "storage/shmem.h"
 #include "utils/guc_hooks.h"
 #include "utils/memutils.h"
 #include "utils/pgstat_internal.h"

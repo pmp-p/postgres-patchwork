@@ -3,7 +3,7 @@
  * lockfuncs.c
  *		Functions for SQL access to various lock-manager capabilities.
  *
- * Copyright (c) 2002-2024, PostgreSQL Global Development Group
+ * Copyright (c) 2002-2023, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
  *		src/backend/utils/adt/lockfuncs.c
@@ -13,6 +13,7 @@
 #include "postgres.h"
 
 #include "access/htup_details.h"
+#include "access/xact.h"
 #include "catalog/pg_type.h"
 #include "funcapi.h"
 #include "miscadmin.h"
@@ -23,8 +24,7 @@
 
 /*
  * This must match enum LockTagType!  Also, be sure to document any changes
- * in the docs for the pg_locks view and update the WaitEventLOCK section in
- * src/backend/utils/activity/wait_event_names.txt.
+ * in the docs for the pg_locks view and for wait event types.
  */
 const char *const LockTagTypeNames[] = {
 	"relation",
@@ -72,16 +72,15 @@ typedef struct
  * This is currently only used in pg_lock_status, so we put it here.
  */
 static Datum
-VXIDGetDatum(ProcNumber procNumber, LocalTransactionId lxid)
+VXIDGetDatum(BackendId bid, LocalTransactionId lxid)
 {
 	/*
-	 * The representation is "<procNumber>/<lxid>", decimal and unsigned
-	 * decimal respectively.  Note that elog.c also knows how to format a
-	 * vxid.
+	 * The representation is "<bid>/<lxid>", decimal and unsigned decimal
+	 * respectively.  Note that elog.c also knows how to format a vxid.
 	 */
 	char		vxidstr[32];
 
-	snprintf(vxidstr, sizeof(vxidstr), "%d/%u", procNumber, lxid);
+	snprintf(vxidstr, sizeof(vxidstr), "%d/%u", bid, lxid);
 
 	return CStringGetTextDatum(vxidstr);
 }
@@ -353,7 +352,7 @@ pg_lock_status(PG_FUNCTION_ARGS)
 				break;
 		}
 
-		values[10] = VXIDGetDatum(instance->vxid.procNumber, instance->vxid.localTransactionId);
+		values[10] = VXIDGetDatum(instance->backend, instance->lxid);
 		if (instance->pid != 0)
 			values[11] = Int32GetDatum(instance->pid);
 		else
@@ -419,7 +418,7 @@ pg_lock_status(PG_FUNCTION_ARGS)
 		nulls[9] = true;		/* objsubid */
 
 		/* lock holder */
-		values[10] = VXIDGetDatum(xact->vxid.procNumber,
+		values[10] = VXIDGetDatum(xact->vxid.backendId,
 								  xact->vxid.localTransactionId);
 		if (xact->pid != 0)
 			values[11] = Int32GetDatum(xact->pid);
