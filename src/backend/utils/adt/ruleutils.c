@@ -338,7 +338,7 @@ static char *pg_get_viewdef_worker(Oid viewoid,
 								   int prettyFlags, int wrapColumn);
 static char *pg_get_triggerdef_worker(Oid trigid, bool pretty);
 static int	decompile_column_index_array(Datum column_index_array, Oid relId,
-										 bool withPeriod, StringInfo buf);
+										 StringInfo buf);
 static char *pg_get_ruledef_worker(Oid ruleoid, int prettyFlags);
 static char *pg_get_indexdef_worker(Oid indexrelid, int colno,
 									const Oid *excludeOps,
@@ -2260,8 +2260,7 @@ pg_get_constraintdef_worker(Oid constraintId, bool fullCommand,
 				val = SysCacheGetAttrNotNull(CONSTROID, tup,
 											 Anum_pg_constraint_conkey);
 
-				/* If it is a temporal foreign key then it uses PERIOD. */
-				decompile_column_index_array(val, conForm->conrelid, conForm->conperiod, &buf);
+				decompile_column_index_array(val, conForm->conrelid, &buf);
 
 				/* add foreign relation name */
 				appendStringInfo(&buf, ") REFERENCES %s(",
@@ -2272,7 +2271,7 @@ pg_get_constraintdef_worker(Oid constraintId, bool fullCommand,
 				val = SysCacheGetAttrNotNull(CONSTROID, tup,
 											 Anum_pg_constraint_confkey);
 
-				decompile_column_index_array(val, conForm->confrelid, conForm->conperiod, &buf);
+				decompile_column_index_array(val, conForm->confrelid, &buf);
 
 				appendStringInfoChar(&buf, ')');
 
@@ -2358,7 +2357,7 @@ pg_get_constraintdef_worker(Oid constraintId, bool fullCommand,
 				if (!isnull)
 				{
 					appendStringInfoString(&buf, " (");
-					decompile_column_index_array(val, conForm->conrelid, false, &buf);
+					decompile_column_index_array(val, conForm->conrelid, &buf);
 					appendStringInfoChar(&buf, ')');
 				}
 
@@ -2393,9 +2392,7 @@ pg_get_constraintdef_worker(Oid constraintId, bool fullCommand,
 				val = SysCacheGetAttrNotNull(CONSTROID, tup,
 											 Anum_pg_constraint_conkey);
 
-				keyatts = decompile_column_index_array(val, conForm->conrelid, false, &buf);
-				if (conForm->conperiod)
-					appendStringInfoString(&buf, " WITHOUT OVERLAPS");
+				keyatts = decompile_column_index_array(val, conForm->conrelid, &buf);
 
 				appendStringInfoChar(&buf, ')');
 
@@ -2506,28 +2503,6 @@ pg_get_constraintdef_worker(Oid constraintId, bool fullCommand,
 								 conForm->connoinherit ? " NO INHERIT" : "");
 				break;
 			}
-		case CONSTRAINT_NOTNULL:
-			{
-				if (conForm->conrelid)
-				{
-					AttrNumber	attnum;
-
-					attnum = extractNotNullColumn(tup);
-
-					appendStringInfo(&buf, "NOT NULL %s",
-									 quote_identifier(get_attname(conForm->conrelid,
-																  attnum, false)));
-					if (((Form_pg_constraint) GETSTRUCT(tup))->connoinherit)
-						appendStringInfoString(&buf, " NO INHERIT");
-				}
-				else if (conForm->contypid)
-				{
-					/* conkey is null for domain not-null constraints */
-					appendStringInfoString(&buf, "NOT NULL");
-				}
-				break;
-			}
-
 		case CONSTRAINT_TRIGGER:
 
 			/*
@@ -2599,7 +2574,7 @@ pg_get_constraintdef_worker(Oid constraintId, bool fullCommand,
  */
 static int
 decompile_column_index_array(Datum column_index_array, Oid relId,
-							 bool withPeriod, StringInfo buf)
+							 StringInfo buf)
 {
 	Datum	   *keys;
 	int			nKeys;
@@ -2618,9 +2593,7 @@ decompile_column_index_array(Datum column_index_array, Oid relId,
 		if (j == 0)
 			appendStringInfoString(buf, quote_identifier(colName));
 		else
-			appendStringInfo(buf, ", %s%s",
-							 (withPeriod && j == nKeys - 1) ? "PERIOD " : "",
-							 quote_identifier(colName));
+			appendStringInfo(buf, ", %s", quote_identifier(colName));
 	}
 
 	return nKeys;
@@ -6043,7 +6016,7 @@ get_basic_select_query(Query *query, deparse_context *context,
 /* ----------
  * get_target_list			- Parse back a SELECT target list
  *
- * This is also used for RETURNING lists in INSERT/UPDATE/DELETE.
+ * This is also used for RETURNING lists in INSERT/UPDATE/DELETE/MERGE.
  *
  * resultDesc and colNamesVisible are as for get_query_def()
  * ----------
@@ -11632,7 +11605,7 @@ get_xmltable(TableFunc *tf, deparse_context *context, bool showimplicit)
 }
 
 /*
- * get_json_nested_columns - Parse back nested JSON_TABLE columns
+ * get_json_table_nested_columns - Parse back nested JSON_TABLE columns
  */
 static void
 get_json_table_nested_columns(TableFunc *tf, JsonTablePlan *plan,

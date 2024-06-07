@@ -1319,10 +1319,13 @@ PrintTOCSummary(Archive *AHX)
 	curSection = SECTION_PRE_DATA;
 	for (te = AH->toc->next; te != AH->toc; te = te->next)
 	{
+		/* This bit must match ProcessArchiveRestoreOptions' marking logic */
 		if (te->section != SECTION_NONE)
 			curSection = te->section;
+		te->reqs = _tocEntryRequired(te, curSection, AH);
+		/* Now, should we print it? */
 		if (ropt->verbose ||
-			(_tocEntryRequired(te, curSection, AH) & (REQ_SCHEMA | REQ_DATA)) != 0)
+			(te->reqs & (REQ_SCHEMA | REQ_DATA)) != 0)
 		{
 			char	   *sanitized_name;
 			char	   *sanitized_schema;
@@ -3451,7 +3454,7 @@ _selectOutputSchema(ArchiveHandle *AH, const char *schemaName)
 
 		if (!res || PQresultStatus(res) != PGRES_COMMAND_OK)
 			warn_or_exit_horribly(AH,
-								  "could not set search_path to \"%s\": %s",
+								  "could not set \"search_path\" to \"%s\": %s",
 								  schemaName, PQerrorMessage(AH->connection));
 
 		PQclear(res);
@@ -3512,7 +3515,7 @@ _selectTablespace(ArchiveHandle *AH, const char *tablespace)
 
 		if (!res || PQresultStatus(res) != PGRES_COMMAND_OK)
 			warn_or_exit_horribly(AH,
-								  "could not set default_tablespace to %s: %s",
+								  "could not set \"default_tablespace\" to %s: %s",
 								  fmtId(want), PQerrorMessage(AH->connection));
 
 		PQclear(res);
@@ -3561,7 +3564,7 @@ _selectTableAccessMethod(ArchiveHandle *AH, const char *tableam)
 
 		if (!res || PQresultStatus(res) != PGRES_COMMAND_OK)
 			warn_or_exit_horribly(AH,
-								  "could not set default_table_access_method: %s",
+								  "could not set \"default_table_access_method\": %s",
 								  PQerrorMessage(AH->connection));
 
 		PQclear(res);

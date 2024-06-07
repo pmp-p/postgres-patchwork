@@ -137,7 +137,7 @@ static double preprocess_limit(PlannerInfo *root,
 							   double tuple_fraction,
 							   int64 *offset_est, int64 *count_est);
 static void remove_useless_groupby_columns(PlannerInfo *root);
-static List *groupclause_apply_groupingset(PlannerInfo *root, List *force);
+static List *preprocess_groupclause(PlannerInfo *root, List *force);
 static List *extract_rollup_sets(List *groupingSets);
 static List *reorder_grouping_sets(List *groupingSets, List *sortclause);
 static void standard_qp_callback(PlannerInfo *root, void *extra);
@@ -870,9 +870,6 @@ subquery_planner(PlannerGlobal *glob, Query *parse, PlannerInfo *parent_root,
 												EXPRKIND_LIMIT);
 		wc->endOffset = preprocess_expression(root, wc->endOffset,
 											  EXPRKIND_LIMIT);
-		wc->runCondition = (List *) preprocess_expression(root,
-														  (Node *) wc->runCondition,
-														  EXPRKIND_TARGET);
 	}
 
 	parse->limitOffset = preprocess_expression(root, parse->limitOffset,
@@ -1425,7 +1422,7 @@ grouping_planner(PlannerInfo *root, double tuple_fraction,
 		else if (parse->groupClause)
 		{
 			/* Preprocess regular GROUP BY clause, if any */
-			root->processed_groupClause = list_copy(parse->groupClause);
+			root->processed_groupClause = preprocess_groupclause(root, NIL);
 			/* Remove any redundant GROUP BY columns */
 			remove_useless_groupby_columns(root);
 		}
@@ -2172,7 +2169,7 @@ preprocess_grouping_sets(PlannerInfo *root)
 		 * The groupClauses for hashed grouping sets are built later on.)
 		 */
 		if (gs->set)
-			rollup->groupClause = groupclause_apply_groupingset(root, gs->set);
+			rollup->groupClause = preprocess_groupclause(root, gs->set);
 		else
 			rollup->groupClause = NIL;
 
@@ -2824,24 +2821,106 @@ remove_useless_groupby_columns(PlannerInfo *root)
 }
 
 /*
- * groupclause_apply_groupingset
- *		Apply the order of GROUP BY clauses defined by grouping sets.  Items
- *		not in the grouping set are skipped.
+ * preprocess_groupclause - do preparatory work on GROUP BY clause
+ *
+ * The idea here is to adjust the ordering of the GROUP BY elements
+ * (which in itself is semantically insignificant) to match ORDER BY,
+ * thereby allowing a single sort operation to both implement the ORDER BY
+ * requirement and set up for a Unique step that implements GROUP BY.
+ * We also consider partial match between GROUP BY and ORDER BY elements,
+ * which could allow to implement ORDER BY using the incremental sort.
+ *
+ * We also consider other orderings of the GROUP BY elements, which could
+ * match the sort ordering of other possible plans (eg an indexscan) and
+ * thereby reduce cost.  This is implemented during the generation of grouping
+ * paths.  See get_useful_group_keys_orderings() for details.
+ *
+ * Note: we need no comparable processing of the distinctClause because
+ * the parser already enforced that that matches ORDER BY.
+ *
+ * Note: we return a fresh List, but its elements are the same
+ * SortGroupClauses appearing in parse->groupClause.  This is important
+ * because later processing may modify the processed_groupClause list.
+ *
+ * For grouping sets, the order of items is instead forced to agree with that
+ * of the grouping set (and items not in the grouping set are skipped). The
+ * work of sorting the order of grouping set elements to match the ORDER BY if
+ * possible is done elsewhere.
  */
 static List *
-groupclause_apply_groupingset(PlannerInfo *root, List *gset)
+preprocess_groupclause(PlannerInfo *root, List *force)
 {
 	Query	   *parse = root->parse;
 	List	   *new_groupclause = NIL;
 	ListCell   *sl;
+	ListCell   *gl;
 
-	foreach(sl, gset)
+	/* For grouping sets, we need to force the ordering */
+	if (force)
 	{
-		Index		ref = lfirst_int(sl);
-		SortGroupClause *cl = get_sortgroupref_clause(ref, parse->groupClause);
+		foreach(sl, force)
+		{
+			Index		ref = lfirst_int(sl);
+			SortGroupClause *cl = get_sortgroupref_clause(ref, parse->groupClause);
 
-		new_groupclause = lappend(new_groupclause, cl);
+			new_groupclause = lappend(new_groupclause, cl);
+		}
+
+		return new_groupclause;
 	}
+
+	/* If no ORDER BY, nothing useful to do here */
+	if (parse->sortClause == NIL)
+		return list_copy(parse->groupClause);
+
+	/*
+	 * Scan the ORDER BY clause and construct a list of matching GROUP BY
+	 * items, but only as far as we can make a matching prefix.
+	 *
+	 * This code assumes that the sortClause contains no duplicate items.
+	 */
+	foreach(sl, parse->sortClause)
+	{
+		SortGroupClause *sc = lfirst_node(SortGroupClause, sl);
+
+		foreach(gl, parse->groupClause)
+		{
+			SortGroupClause *gc = lfirst_node(SortGroupClause, gl);
+
+			if (equal(gc, sc))
+			{
+				new_groupclause = lappend(new_groupclause, gc);
+				break;
+			}
+		}
+		if (gl == NULL)
+			break;				/* no match, so stop scanning */
+	}
+
+
+	/* If no match at all, no point in reordering GROUP BY */
+	if (new_groupclause == NIL)
+		return list_copy(parse->groupClause);
+
+	/*
+	 * Add any remaining GROUP BY items to the new list.  We don't require a
+	 * complete match, because even partial match allows ORDER BY to be
+	 * implemented using incremental sort.  Also, give up if there are any
+	 * non-sortable GROUP BY items, since then there's no hope anyway.
+	 */
+	foreach(gl, parse->groupClause)
+	{
+		SortGroupClause *gc = lfirst_node(SortGroupClause, gl);
+
+		if (list_member_ptr(new_groupclause, gc))
+			continue;			/* it matched an ORDER BY item */
+		if (!OidIsValid(gc->sortop))	/* give up, GROUP BY can't be sorted */
+			return list_copy(parse->groupClause);
+		new_groupclause = lappend(new_groupclause, gc);
+	}
+
+	/* Success --- install the rearranged GROUP BY list */
+	Assert(list_length(parse->groupClause) == list_length(new_groupclause));
 	return new_groupclause;
 }
 
@@ -3398,12 +3477,17 @@ standard_qp_callback(PlannerInfo *root, void *extra)
 		 */
 		bool		sortable;
 
+		/*
+		 * Convert group clauses into pathkeys.  Set the ec_sortref field of
+		 * EquivalenceClass'es if it's not set yet.
+		 */
 		root->group_pathkeys =
 			make_pathkeys_for_sortclauses_extended(root,
 												   &root->processed_groupClause,
 												   tlist,
 												   true,
-												   &sortable);
+												   &sortable,
+												   true);
 		if (!sortable)
 		{
 			/* Can't sort; no point in considering aggregate ordering either */
@@ -3453,7 +3537,8 @@ standard_qp_callback(PlannerInfo *root, void *extra)
 												   &root->processed_distinctClause,
 												   tlist,
 												   true,
-												   &sortable);
+												   &sortable,
+												   false);
 		if (!sortable)
 			root->distinct_pathkeys = NIL;
 	}
@@ -3479,7 +3564,8 @@ standard_qp_callback(PlannerInfo *root, void *extra)
 												   &groupClauses,
 												   tlist,
 												   false,
-												   &sortable);
+												   &sortable,
+												   false);
 		if (!sortable)
 			root->setop_pathkeys = NIL;
 	}
@@ -4166,7 +4252,7 @@ consider_groupingsets_paths(PlannerInfo *root,
 			{
 				rollup = makeNode(RollupData);
 
-				rollup->groupClause = groupclause_apply_groupingset(root, gset);
+				rollup->groupClause = preprocess_groupclause(root, gset);
 				rollup->gsets_data = list_make1(gs);
 				rollup->gsets = remap_to_groupclause_idx(rollup->groupClause,
 														 rollup->gsets_data,
@@ -4355,7 +4441,7 @@ consider_groupingsets_paths(PlannerInfo *root,
 
 			Assert(gs->set != NIL);
 
-			rollup->groupClause = groupclause_apply_groupingset(root, gs->set);
+			rollup->groupClause = preprocess_groupclause(root, gs->set);
 			rollup->gsets_data = list_make1(gs);
 			rollup->gsets = remap_to_groupclause_idx(rollup->groupClause,
 													 rollup->gsets_data,
@@ -4527,9 +4613,11 @@ create_one_window_path(PlannerInfo *root,
 	{
 		WindowClause *wc = lfirst_node(WindowClause, l);
 		List	   *window_pathkeys;
+		List	   *runcondition = NIL;
 		int			presorted_keys;
 		bool		is_sorted;
 		bool		topwindow;
+		ListCell   *lc2;
 
 		window_pathkeys = make_pathkeys_for_window(root,
 												   wc,
@@ -4577,7 +4665,6 @@ create_one_window_path(PlannerInfo *root,
 			 * we do need to account for the increase in tlist width.
 			 */
 			int64		tuple_width = window_target->width;
-			ListCell   *lc2;
 
 			window_target = copy_pathtarget(window_target);
 			foreach(lc2, wflists->windowFuncs[wc->winref])
@@ -4599,17 +4686,53 @@ create_one_window_path(PlannerInfo *root,
 		topwindow = foreach_current_index(l) == list_length(activeWindows) - 1;
 
 		/*
-		 * Accumulate all of the runConditions from each intermediate
-		 * WindowClause.  The top-level WindowAgg must pass these as a qual so
-		 * that it filters out unwanted tuples correctly.
+		 * Collect the WindowFuncRunConditions from each WindowFunc and
+		 * convert them into OpExprs
 		 */
-		if (!topwindow)
-			topqual = list_concat(topqual, wc->runCondition);
+		foreach(lc2, wflists->windowFuncs[wc->winref])
+		{
+			ListCell   *lc3;
+			WindowFunc *wfunc = lfirst_node(WindowFunc, lc2);
+
+			foreach(lc3, wfunc->runCondition)
+			{
+				WindowFuncRunCondition *wfuncrc =
+					lfirst_node(WindowFuncRunCondition, lc3);
+				Expr	   *opexpr;
+				Expr	   *leftop;
+				Expr	   *rightop;
+
+				if (wfuncrc->wfunc_left)
+				{
+					leftop = (Expr *) copyObject(wfunc);
+					rightop = copyObject(wfuncrc->arg);
+				}
+				else
+				{
+					leftop = copyObject(wfuncrc->arg);
+					rightop = (Expr *) copyObject(wfunc);
+				}
+
+				opexpr = make_opclause(wfuncrc->opno,
+									   BOOLOID,
+									   false,
+									   leftop,
+									   rightop,
+									   InvalidOid,
+									   wfuncrc->inputcollid);
+
+				runcondition = lappend(runcondition, opexpr);
+
+				if (!topwindow)
+					topqual = lappend(topqual, opexpr);
+			}
+		}
 
 		path = (Path *)
 			create_windowagg_path(root, window_rel, path, window_target,
 								  wflists->windowFuncs[wc->winref],
-								  wc, topwindow ? topqual : NIL, topwindow);
+								  runcondition, wc,
+								  topwindow ? topqual : NIL, topwindow);
 	}
 
 	add_path(window_rel, path);
@@ -6027,7 +6150,8 @@ make_pathkeys_for_window(PlannerInfo *root, WindowClause *wc,
 																 &wc->partitionClause,
 																 tlist,
 																 true,
-																 &sortable);
+																 &sortable,
+																 false);
 
 		Assert(sortable);
 	}
@@ -6875,7 +6999,7 @@ add_paths_to_grouping_rel(PlannerInfo *root, RelOptInfo *input_rel,
 
 			foreach(lc2, pathkey_orderings)
 			{
-				PathKeyInfo *info = (PathKeyInfo *) lfirst(lc2);
+				GroupByOrdering *info = (GroupByOrdering *) lfirst(lc2);
 
 				/* restore the path (we replace it in the loop) */
 				path = path_save;
@@ -6956,7 +7080,7 @@ add_paths_to_grouping_rel(PlannerInfo *root, RelOptInfo *input_rel,
 				/* process all potentially interesting grouping reorderings */
 				foreach(lc2, pathkey_orderings)
 				{
-					PathKeyInfo *info = (PathKeyInfo *) lfirst(lc2);
+					GroupByOrdering *info = (GroupByOrdering *) lfirst(lc2);
 
 					/* restore the path (we replace it in the loop) */
 					path = path_save;
@@ -7207,7 +7331,7 @@ create_partial_grouping_paths(PlannerInfo *root,
 			/* process all potentially interesting grouping reorderings */
 			foreach(lc2, pathkey_orderings)
 			{
-				PathKeyInfo *info = (PathKeyInfo *) lfirst(lc2);
+				GroupByOrdering *info = (GroupByOrdering *) lfirst(lc2);
 
 				/* restore the path (we replace it in the loop) */
 				path = path_save;
@@ -7263,7 +7387,7 @@ create_partial_grouping_paths(PlannerInfo *root,
 			/* process all potentially interesting grouping reorderings */
 			foreach(lc2, pathkey_orderings)
 			{
-				PathKeyInfo *info = (PathKeyInfo *) lfirst(lc2);
+				GroupByOrdering *info = (GroupByOrdering *) lfirst(lc2);
 
 
 				/* restore the path (we replace it in the loop) */
