@@ -2033,6 +2033,7 @@ oom_error:
 static int
 connectNoDelay(PGconn *conn)
 {
+#if !defined(__EMSCRIPTEN__)
 #ifdef	TCP_NODELAY
 	int			on = 1;
 
@@ -2047,7 +2048,7 @@ connectNoDelay(PGconn *conn)
 		return 0;
 	}
 #endif
-
+#endif
 	return 1;
 }
 
@@ -2168,6 +2169,9 @@ connectFailureMessage(PGconn *conn, int errorno)
 static int
 useKeepalives(PGconn *conn)
 {
+#if defined(__EMSCRIPTEN__)
+return 0;
+#else
 	char	   *ep;
 	int			val;
 
@@ -2177,6 +2181,7 @@ useKeepalives(PGconn *conn)
 	if (*ep)
 		return -1;
 	return val != 0 ? 1 : 0;
+#endif
 }
 
 #ifndef WIN32
@@ -2403,13 +2408,14 @@ pqConnectDBStart(PGconn *conn)
 	 * Nobody but developers should see this message, so we don't bother
 	 * translating it.
 	 */
+#if !defined(__EMSCRIPTEN__)
 	if (!pg_link_canary_is_frontend())
 	{
 		appendPQExpBufferStr(&conn->errorMessage,
 							 "libpq is incorrectly linked to backend functions\n");
 		goto connect_errReturn;
 	}
-
+#endif
 	/* Ensure our buffers are empty */
 	conn->inStart = conn->inCursor = conn->inEnd = 0;
 	conn->outCount = 0;
