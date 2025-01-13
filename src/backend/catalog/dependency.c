@@ -4,7 +4,7 @@
  *	  Routines to support inter-object dependencies.
  *
  *
- * Portions Copyright (c) 1996-2024, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2025, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -1326,7 +1326,9 @@ deleteOneObject(const ObjectAddress *object, Relation *depRel, int flags)
 	/*
 	 * Delete any comments, security labels, or initial privileges associated
 	 * with this object.  (This is a convenient place to do these things,
-	 * rather than having every object type know to do it.)
+	 * rather than having every object type know to do it.)  As above, all
+	 * these functions must remove records for sub-objects too if the subid is
+	 * zero.
 	 */
 	DeleteComments(object->objectId, object->classId, object->objectSubId);
 	DeleteSecurityLabel(object);
@@ -2189,7 +2191,22 @@ find_expr_references_walker(Node *node,
 					}
 					context->rtables = list_delete_first(context->rtables);
 					break;
+				case RTE_NAMEDTUPLESTORE:
+
+					/*
+					 * Cataloged objects cannot depend on tuplestores, because
+					 * those have no cataloged representation.  For now we can
+					 * call the tuplestore a "transition table" because that's
+					 * the only kind exposed to SQL, but someday we might have
+					 * to work harder.
+					 */
+					ereport(ERROR,
+							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+							 errmsg("transition table \"%s\" cannot be referenced in a persistent object",
+									rte->eref->aliasname)));
+					break;
 				default:
+					/* Other RTE types can be ignored here */
 					break;
 			}
 		}
@@ -2238,7 +2255,7 @@ find_expr_references_walker(Node *node,
 		context->rtables = lcons(query->rtable, context->rtables);
 		result = query_tree_walker(query,
 								   find_expr_references_walker,
-								   (void *) context,
+								   context,
 								   QTW_IGNORE_JOINALIASES |
 								   QTW_EXAMINE_SORTGROUP);
 		context->rtables = list_delete_first(context->rtables);
@@ -2308,7 +2325,7 @@ find_expr_references_walker(Node *node,
 	}
 
 	return expression_tree_walker(node, find_expr_references_walker,
-								  (void *) context);
+								  context);
 }
 
 /*
@@ -2784,6 +2801,7 @@ DeleteInitPrivs(const ObjectAddress *object)
 {
 	Relation	relation;
 	ScanKeyData key[3];
+	int			nkeys;
 	SysScanDesc scan;
 	HeapTuple	oldtuple;
 
@@ -2797,13 +2815,19 @@ DeleteInitPrivs(const ObjectAddress *object)
 				Anum_pg_init_privs_classoid,
 				BTEqualStrategyNumber, F_OIDEQ,
 				ObjectIdGetDatum(object->classId));
-	ScanKeyInit(&key[2],
-				Anum_pg_init_privs_objsubid,
-				BTEqualStrategyNumber, F_INT4EQ,
-				Int32GetDatum(object->objectSubId));
+	if (object->objectSubId != 0)
+	{
+		ScanKeyInit(&key[2],
+					Anum_pg_init_privs_objsubid,
+					BTEqualStrategyNumber, F_INT4EQ,
+					Int32GetDatum(object->objectSubId));
+		nkeys = 3;
+	}
+	else
+		nkeys = 2;
 
 	scan = systable_beginscan(relation, InitPrivsObjIndexId, true,
-							  NULL, 3, key);
+							  NULL, nkeys, key);
 
 	while (HeapTupleIsValid(oldtuple = systable_getnext(scan)))
 		CatalogTupleDelete(relation, &oldtuple->t_self);

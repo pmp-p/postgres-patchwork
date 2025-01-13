@@ -2,7 +2,7 @@
  *
  * pg_test_fsync --- tests all supported fsync() methods
  *
- * Portions Copyright (c) 1996-2024, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2025, PostgreSQL Global Development Group
  *
  * src/bin/pg_test_fsync/pg_test_fsync.c
  *
@@ -19,7 +19,6 @@
 #include <unistd.h>
 #include <signal.h>
 
-#include "access/xlogdefs.h"
 #include "common/logging.h"
 #include "common/pg_prng.h"
 #include "getopt_long.h"

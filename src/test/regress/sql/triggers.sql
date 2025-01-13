@@ -2435,6 +2435,25 @@ create trigger my_table_col_update_trig
 drop table my_table;
 
 --
+-- Verify that transition tables can't be used in, eg, a view.
+--
+
+create table my_table (a int);
+create function make_bogus_matview() returns trigger as
+$$ begin
+  create materialized view transition_test_mv as select * from new_table;
+  return new;
+end $$
+language plpgsql;
+create trigger make_bogus_matview
+  after insert on my_table
+  referencing new table as new_table
+  for each statement execute function make_bogus_matview();
+insert into my_table values (42);  -- error
+drop table my_table;
+drop function make_bogus_matview();
+
+--
 -- Test firing of triggers with transition tables by foreign key cascades
 --
 
@@ -2477,6 +2496,20 @@ delete from refd_table where length(b) = 3;
 select * from trig_table;
 
 drop table refd_table, trig_table;
+
+--
+-- Test that we can drop a not-yet-fired deferred trigger
+--
+
+create table refd_table (id int primary key);
+create table trig_table (fk int references refd_table initially deferred);
+
+begin;
+insert into trig_table values (1);
+drop table refd_table cascade;
+commit;
+
+drop table trig_table;
 
 --
 -- self-referential FKs are even more fun

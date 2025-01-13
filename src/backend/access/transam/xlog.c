@@ -28,7 +28,7 @@
  * the current system state, and for starting/stopping backups.
  *
  *
- * Portions Copyright (c) 1996-2024, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2025, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/backend/access/transam/xlog.c
@@ -73,7 +73,6 @@
 #include "pg_trace.h"
 #include "pgstat.h"
 #include "port/atomics.h"
-#include "port/pg_iovec.h"
 #include "postmaster/bgwriter.h"
 #include "postmaster/startup.h"
 #include "postmaster/walsummarizer.h"
@@ -97,7 +96,6 @@
 #include "utils/guc_hooks.h"
 #include "utils/guc_tables.h"
 #include "utils/injection_point.h"
-#include "utils/memutils.h"
 #include "utils/ps_status.h"
 #include "utils/relmapper.h"
 #include "utils/snapmgr.h"
@@ -105,7 +103,9 @@
 #include "utils/timestamp.h"
 #include "utils/varlena.h"
 
-extern uint32 bootstrap_data_checksum_version;
+#ifdef WAL_DEBUG
+#include "utils/memutils.h"
+#endif
 
 /* timeline ID to be used when bootstrapping */
 #define BootstrapTimeLineID		1
@@ -500,6 +500,11 @@ typedef struct XLogCtlData
 	 * If we create a new timeline when the system was started up,
 	 * PrevTimeLineID is the old timeline's ID that we forked off from.
 	 * Otherwise it's equal to InsertTimeLineID.
+	 *
+	 * We set these fields while holding info_lck. Most that reads these
+	 * values knows that recovery is no longer in progress and so can safely
+	 * read the value without a lock, but code that could be run either during
+	 * or after recovery can take info_lck while reading these values.
 	 */
 	TimeLineID	InsertTimeLineID;
 	TimeLineID	PrevTimeLineID;
@@ -549,7 +554,7 @@ typedef struct XLogCtlData
 } XLogCtlData;
 
 /*
- * Classification of XLogRecordInsert operations.
+ * Classification of XLogInsertRecord operations.
  */
 typedef enum
 {
@@ -683,7 +688,7 @@ static void ValidateXLOGDirectoryStructure(void);
 static void CleanupBackupHistory(void);
 static void UpdateMinRecoveryPoint(XLogRecPtr lsn, bool force);
 static bool PerformRecoveryXLogAction(void);
-static void InitControlFile(uint64 sysidentifier);
+static void InitControlFile(uint64 sysidentifier, uint32 data_checksum_version);
 static void WriteControlFile(void);
 static void ReadControlFile(void);
 static void UpdateControlFile(void);
@@ -1244,7 +1249,7 @@ CopyXLogRecordToWAL(int write_len, bool isLogSwitch, XLogRecData *rdata,
 	written = 0;
 	while (rdata != NULL)
 	{
-		char	   *rdata_data = rdata->data;
+		const char *rdata_data = rdata->data;
 		int			rdata_len = rdata->len;
 
 		while (rdata_len > freespace)
@@ -2665,8 +2670,14 @@ XLogSetAsyncXactLSN(XLogRecPtr asyncXactLSN)
 			wakeup = true;
 	}
 
-	if (wakeup && ProcGlobal->walwriterLatch)
-		SetLatch(ProcGlobal->walwriterLatch);
+	if (wakeup)
+	{
+		volatile PROC_HDR *procglobal = ProcGlobal;
+		ProcNumber	walwriterProc = procglobal->walwriterProc;
+
+		if (walwriterProc != INVALID_PROC_NUMBER)
+			SetLatch(&GetPGProcByNumber(walwriterProc)->procLatch);
+	}
 }
 
 /*
@@ -4190,7 +4201,7 @@ CleanupBackupHistory(void)
  */
 
 static void
-InitControlFile(uint64 sysidentifier)
+InitControlFile(uint64 sysidentifier, uint32 data_checksum_version)
 {
 	char		mock_auth_nonce[MOCK_AUTH_NONCE_LEN];
 
@@ -4221,7 +4232,7 @@ InitControlFile(uint64 sysidentifier)
 	ControlFile->wal_level = wal_level;
 	ControlFile->wal_log_hints = wal_log_hints;
 	ControlFile->track_commit_timestamp = track_commit_timestamp;
-	ControlFile->data_checksum_version = bootstrap_data_checksum_version;
+	ControlFile->data_checksum_version = data_checksum_version;
 }
 
 static void
@@ -4311,7 +4322,7 @@ ReadControlFile(void)
 {
 	pg_crc32c	crc;
 	int			fd;
-	static char wal_segsz_str[20];
+	char		wal_segsz_str[20];
 	int			r;
 
 	/*
@@ -4391,17 +4402,21 @@ ReadControlFile(void)
 		ereport(FATAL,
 				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
 				 errmsg("database files are incompatible with server"),
-				 errdetail("The database cluster was initialized with CATALOG_VERSION_NO %d,"
-						   " but the server was compiled with CATALOG_VERSION_NO %d.",
-						   ControlFile->catalog_version_no, CATALOG_VERSION_NO),
+		/* translator: %s is a variable name and %d is its value */
+				 errdetail("The database cluster was initialized with %s %d,"
+						   " but the server was compiled with %s %d.",
+						   "CATALOG_VERSION_NO", ControlFile->catalog_version_no,
+						   "CATALOG_VERSION_NO", CATALOG_VERSION_NO),
 				 errhint("It looks like you need to initdb.")));
 	if (ControlFile->maxAlign != MAXIMUM_ALIGNOF)
 		ereport(FATAL,
 				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
 				 errmsg("database files are incompatible with server"),
-				 errdetail("The database cluster was initialized with MAXALIGN %d,"
-						   " but the server was compiled with MAXALIGN %d.",
-						   ControlFile->maxAlign, MAXIMUM_ALIGNOF),
+		/* translator: %s is a variable name and %d is its value */
+				 errdetail("The database cluster was initialized with %s %d,"
+						   " but the server was compiled with %s %d.",
+						   "MAXALIGN", ControlFile->maxAlign,
+						   "MAXALIGN", MAXIMUM_ALIGNOF),
 				 errhint("It looks like you need to initdb.")));
 	if (ControlFile->floatFormat != FLOATFORMAT_VALUE)
 		ereport(FATAL,
@@ -4413,57 +4428,71 @@ ReadControlFile(void)
 		ereport(FATAL,
 				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
 				 errmsg("database files are incompatible with server"),
-				 errdetail("The database cluster was initialized with BLCKSZ %d,"
-						   " but the server was compiled with BLCKSZ %d.",
-						   ControlFile->blcksz, BLCKSZ),
+		/* translator: %s is a variable name and %d is its value */
+				 errdetail("The database cluster was initialized with %s %d,"
+						   " but the server was compiled with %s %d.",
+						   "BLCKSZ", ControlFile->blcksz,
+						   "BLCKSZ", BLCKSZ),
 				 errhint("It looks like you need to recompile or initdb.")));
 	if (ControlFile->relseg_size != RELSEG_SIZE)
 		ereport(FATAL,
 				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
 				 errmsg("database files are incompatible with server"),
-				 errdetail("The database cluster was initialized with RELSEG_SIZE %d,"
-						   " but the server was compiled with RELSEG_SIZE %d.",
-						   ControlFile->relseg_size, RELSEG_SIZE),
+		/* translator: %s is a variable name and %d is its value */
+				 errdetail("The database cluster was initialized with %s %d,"
+						   " but the server was compiled with %s %d.",
+						   "RELSEG_SIZE", ControlFile->relseg_size,
+						   "RELSEG_SIZE", RELSEG_SIZE),
 				 errhint("It looks like you need to recompile or initdb.")));
 	if (ControlFile->xlog_blcksz != XLOG_BLCKSZ)
 		ereport(FATAL,
 				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
 				 errmsg("database files are incompatible with server"),
-				 errdetail("The database cluster was initialized with XLOG_BLCKSZ %d,"
-						   " but the server was compiled with XLOG_BLCKSZ %d.",
-						   ControlFile->xlog_blcksz, XLOG_BLCKSZ),
+		/* translator: %s is a variable name and %d is its value */
+				 errdetail("The database cluster was initialized with %s %d,"
+						   " but the server was compiled with %s %d.",
+						   "XLOG_BLCKSZ", ControlFile->xlog_blcksz,
+						   "XLOG_BLCKSZ", XLOG_BLCKSZ),
 				 errhint("It looks like you need to recompile or initdb.")));
 	if (ControlFile->nameDataLen != NAMEDATALEN)
 		ereport(FATAL,
 				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
 				 errmsg("database files are incompatible with server"),
-				 errdetail("The database cluster was initialized with NAMEDATALEN %d,"
-						   " but the server was compiled with NAMEDATALEN %d.",
-						   ControlFile->nameDataLen, NAMEDATALEN),
+		/* translator: %s is a variable name and %d is its value */
+				 errdetail("The database cluster was initialized with %s %d,"
+						   " but the server was compiled with %s %d.",
+						   "NAMEDATALEN", ControlFile->nameDataLen,
+						   "NAMEDATALEN", NAMEDATALEN),
 				 errhint("It looks like you need to recompile or initdb.")));
 	if (ControlFile->indexMaxKeys != INDEX_MAX_KEYS)
 		ereport(FATAL,
 				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
 				 errmsg("database files are incompatible with server"),
-				 errdetail("The database cluster was initialized with INDEX_MAX_KEYS %d,"
-						   " but the server was compiled with INDEX_MAX_KEYS %d.",
-						   ControlFile->indexMaxKeys, INDEX_MAX_KEYS),
+		/* translator: %s is a variable name and %d is its value */
+				 errdetail("The database cluster was initialized with %s %d,"
+						   " but the server was compiled with %s %d.",
+						   "INDEX_MAX_KEYS", ControlFile->indexMaxKeys,
+						   "INDEX_MAX_KEYS", INDEX_MAX_KEYS),
 				 errhint("It looks like you need to recompile or initdb.")));
 	if (ControlFile->toast_max_chunk_size != TOAST_MAX_CHUNK_SIZE)
 		ereport(FATAL,
 				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
 				 errmsg("database files are incompatible with server"),
-				 errdetail("The database cluster was initialized with TOAST_MAX_CHUNK_SIZE %d,"
-						   " but the server was compiled with TOAST_MAX_CHUNK_SIZE %d.",
-						   ControlFile->toast_max_chunk_size, (int) TOAST_MAX_CHUNK_SIZE),
+		/* translator: %s is a variable name and %d is its value */
+				 errdetail("The database cluster was initialized with %s %d,"
+						   " but the server was compiled with %s %d.",
+						   "TOAST_MAX_CHUNK_SIZE", ControlFile->toast_max_chunk_size,
+						   "TOAST_MAX_CHUNK_SIZE", (int) TOAST_MAX_CHUNK_SIZE),
 				 errhint("It looks like you need to recompile or initdb.")));
 	if (ControlFile->loblksize != LOBLKSIZE)
 		ereport(FATAL,
 				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
 				 errmsg("database files are incompatible with server"),
-				 errdetail("The database cluster was initialized with LOBLKSIZE %d,"
-						   " but the server was compiled with LOBLKSIZE %d.",
-						   ControlFile->loblksize, (int) LOBLKSIZE),
+		/* translator: %s is a variable name and %d is its value */
+				 errdetail("The database cluster was initialized with %s %d,"
+						   " but the server was compiled with %s %d.",
+						   "LOBLKSIZE", ControlFile->loblksize,
+						   "LOBLKSIZE", (int) LOBLKSIZE),
 				 errhint("It looks like you need to recompile or initdb.")));
 
 #ifdef USE_FLOAT8_BYVAL
@@ -4501,11 +4530,15 @@ ReadControlFile(void)
 	/* check and update variables dependent on wal_segment_size */
 	if (ConvertToXSegs(min_wal_size_mb, wal_segment_size) < 2)
 		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-						errmsg("\"min_wal_size\" must be at least twice \"wal_segment_size\"")));
+		/* translator: both %s are GUC names */
+						errmsg("\"%s\" must be at least twice \"%s\"",
+							   "min_wal_size", "wal_segment_size")));
 
 	if (ConvertToXSegs(max_wal_size_mb, wal_segment_size) < 2)
 		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-						errmsg("\"max_wal_size\" must be at least twice \"wal_segment_size\"")));
+		/* translator: both %s are GUC names */
+						errmsg("\"%s\" must be at least twice \"%s\"",
+							   "max_wal_size", "wal_segment_size")));
 
 	UsableBytesInSegment =
 		(wal_segment_size / XLOG_BLCKSZ * UsableBytesInPage) -
@@ -4997,7 +5030,7 @@ XLOGShmemInit(void)
  * and the initial XLOG segment.
  */
 void
-BootStrapXLOG(void)
+BootStrapXLOG(uint32 data_checksum_version)
 {
 	CheckPoint	checkPoint;
 	char	   *buffer;
@@ -5045,6 +5078,7 @@ BootStrapXLOG(void)
 	checkPoint.ThisTimeLineID = BootstrapTimeLineID;
 	checkPoint.PrevTimeLineID = BootstrapTimeLineID;
 	checkPoint.fullPageWrites = fullPageWrites;
+	checkPoint.wal_level = wal_level;
 	checkPoint.nextXid =
 		FullTransactionIdFromEpochAndXid(0, FirstNormalTransactionId);
 	checkPoint.nextOid = FirstGenbkiObjectId;
@@ -5138,7 +5172,7 @@ BootStrapXLOG(void)
 	openLogFile = -1;
 
 	/* Now create pg_control */
-	InitControlFile(sysidentifier);
+	InitControlFile(sysidentifier, data_checksum_version);
 	ControlFile->time = checkPoint.time;
 	ControlFile->checkPoint = checkPoint.redo;
 	ControlFile->checkPointCopy = checkPoint;
@@ -5164,9 +5198,9 @@ BootStrapXLOG(void)
 static char *
 str_time(pg_time_t tnow)
 {
-	static char buf[128];
+	char	   *buf = palloc(128);
 
-	pg_strftime(buf, sizeof(buf),
+	pg_strftime(buf, 128,
 				"%Y-%m-%d %H:%M:%S %Z",
 				pg_localtime(&tnow, log_timezone));
 
@@ -5316,6 +5350,13 @@ CleanupAfterArchiveRecovery(TimeLineID EndOfLogTLI, XLogRecPtr EndOfLog,
 			char		partialfname[MAXFNAMELEN];
 			char		partialpath[MAXPGPATH];
 
+			/*
+			 * If we're summarizing WAL, we can't rename the partial file
+			 * until the summarizer finishes with it, else it will fail.
+			 */
+			if (summarize_wal)
+				WaitForWalSummarization(EndOfLog);
+
 			XLogFilePath(origpath, EndOfLogTLI, endLogSegNo, wal_segment_size);
 			snprintf(partialfname, MAXFNAMELEN, "%s.partial", origfname);
 			snprintf(partialpath, MAXPGPATH, "%s.partial", origpath);
@@ -5362,7 +5403,7 @@ CheckRequiredParameterValues(void)
 	 */
 	if (ArchiveRecoveryRequested && EnableHotStandby)
 	{
-		/* We ignore autovacuum_max_workers when we make this test. */
+		/* We ignore autovacuum_worker_slots when we make this test. */
 		RecoveryRequiresIntParameter("max_connections",
 									 MaxConnections,
 									 ControlFile->MaxConnections);
@@ -5641,7 +5682,7 @@ StartupXLOG(void)
 	if (didCrash)
 		pgstat_discard_stats();
 	else
-		pgstat_restore_stats();
+		pgstat_restore_stats(checkPoint.redo);
 
 	lastFullPageWrites = checkPoint.fullPageWrites;
 
@@ -5777,6 +5818,9 @@ StartupXLOG(void)
 				RunningTransactionsData running;
 				TransactionId latestCompletedXid;
 
+				/* Update pg_subtrans entries for any prepared transactions */
+				StandbyRecoverPreparedTransactions();
+
 				/*
 				 * Construct a RunningTransactions snapshot representing a
 				 * shut down server, with only prepared transactions still
@@ -5785,7 +5829,7 @@ StartupXLOG(void)
 				 */
 				running.xcnt = nxids;
 				running.subxcnt = 0;
-				running.subxid_overflow = false;
+				running.subxid_status = SUBXIDS_IN_SUBTRANS;
 				running.nextXid = XidFromFullTransactionId(checkPoint.nextXid);
 				running.oldestRunningXid = oldestActiveXID;
 				latestCompletedXid = XidFromFullTransactionId(checkPoint.nextXid);
@@ -5795,8 +5839,6 @@ StartupXLOG(void)
 				running.xids = xids;
 
 				ProcArrayApplyRecoveryInfo(&running);
-
-				StandbyRecoverPreparedTransactions();
 			}
 		}
 
@@ -5945,8 +5987,10 @@ StartupXLOG(void)
 	}
 
 	/* Save the selected TimeLineID in shared memory, too */
+	SpinLockAcquire(&XLogCtl->info_lck);
 	XLogCtl->InsertTimeLineID = newTLI;
 	XLogCtl->PrevTimeLineID = endOfRecoveryInfo->lastRecTLI;
+	SpinLockRelease(&XLogCtl->info_lck);
 
 	/*
 	 * Actually, if WAL ended in an incomplete record, skip the parts that
@@ -6482,6 +6526,25 @@ GetWALInsertionTimeLine(void)
 }
 
 /*
+ * GetWALInsertionTimeLineIfSet -- If the system is not in recovery, returns
+ * the WAL insertion timeline; else, returns 0. Wherever possible, use
+ * GetWALInsertionTimeLine() instead, since it's cheaper. Note that this
+ * function decides recovery has ended as soon as the insert TLI is set, which
+ * happens before we set XLogCtl->SharedRecoveryState to RECOVERY_STATE_DONE.
+ */
+TimeLineID
+GetWALInsertionTimeLineIfSet(void)
+{
+	TimeLineID	insertTLI;
+
+	SpinLockAcquire(&XLogCtl->info_lck);
+	insertTLI = XLogCtl->InsertTimeLineID;
+	SpinLockRelease(&XLogCtl->info_lck);
+
+	return insertTLI;
+}
+
+/*
  * GetLastImportantRecPtr -- Returns the LSN of the last important record
  * inserted. All records not explicitly marked as unimportant are considered
  * important.
@@ -6665,14 +6728,15 @@ LogCheckpointEnd(bool restartpoint)
 	 */
 	if (restartpoint)
 		ereport(LOG,
-				(errmsg("restartpoint complete: wrote %d buffers (%.1f%%); "
-						"%d WAL file(s) added, %d removed, %d recycled; "
-						"write=%ld.%03d s, sync=%ld.%03d s, total=%ld.%03d s; "
-						"sync files=%d, longest=%ld.%03d s, average=%ld.%03d s; "
-						"distance=%d kB, estimate=%d kB; "
-						"lsn=%X/%X, redo lsn=%X/%X",
+				(errmsg("restartpoint complete: wrote %d buffers (%.1f%%), "
+						"wrote %d SLRU buffers; %d WAL file(s) added, "
+						"%d removed, %d recycled; write=%ld.%03d s, "
+						"sync=%ld.%03d s, total=%ld.%03d s; sync files=%d, "
+						"longest=%ld.%03d s, average=%ld.%03d s; distance=%d kB, "
+						"estimate=%d kB; lsn=%X/%X, redo lsn=%X/%X",
 						CheckpointStats.ckpt_bufs_written,
 						(double) CheckpointStats.ckpt_bufs_written * 100 / NBuffers,
+						CheckpointStats.ckpt_slru_written,
 						CheckpointStats.ckpt_segs_added,
 						CheckpointStats.ckpt_segs_removed,
 						CheckpointStats.ckpt_segs_recycled,
@@ -6688,14 +6752,15 @@ LogCheckpointEnd(bool restartpoint)
 						LSN_FORMAT_ARGS(ControlFile->checkPointCopy.redo))));
 	else
 		ereport(LOG,
-				(errmsg("checkpoint complete: wrote %d buffers (%.1f%%); "
-						"%d WAL file(s) added, %d removed, %d recycled; "
-						"write=%ld.%03d s, sync=%ld.%03d s, total=%ld.%03d s; "
-						"sync files=%d, longest=%ld.%03d s, average=%ld.%03d s; "
-						"distance=%d kB, estimate=%d kB; "
-						"lsn=%X/%X, redo lsn=%X/%X",
+				(errmsg("checkpoint complete: wrote %d buffers (%.1f%%), "
+						"wrote %d SLRU buffers; %d WAL file(s) added, "
+						"%d removed, %d recycled; write=%ld.%03d s, "
+						"sync=%ld.%03d s, total=%ld.%03d s; sync files=%d, "
+						"longest=%ld.%03d s, average=%ld.%03d s; distance=%d kB, "
+						"estimate=%d kB; lsn=%X/%X, redo lsn=%X/%X",
 						CheckpointStats.ckpt_bufs_written,
 						(double) CheckpointStats.ckpt_bufs_written * 100 / NBuffers,
+						CheckpointStats.ckpt_slru_written,
 						CheckpointStats.ckpt_segs_added,
 						CheckpointStats.ckpt_segs_removed,
 						CheckpointStats.ckpt_segs_recycled,
@@ -6816,8 +6881,11 @@ update_checkpoint_display(int flags, bool restartpoint, bool reset)
  * In this case, we only insert an XLOG_CHECKPOINT_SHUTDOWN record, and it's
  * both the record marking the completion of the checkpoint and the location
  * from which WAL replay would begin if needed.
+ *
+ * Returns true if a new checkpoint was performed, or false if it was skipped
+ * because the system was idle.
  */
-void
+bool
 CreateCheckPoint(int flags)
 {
 	bool		shutdown;
@@ -6909,7 +6977,7 @@ CreateCheckPoint(int flags)
 			END_CRIT_SECTION();
 			ereport(DEBUG1,
 					(errmsg_internal("checkpoint skipped because system is idle")));
-			return;
+			return false;
 		}
 	}
 
@@ -6933,6 +7001,7 @@ CreateCheckPoint(int flags)
 	WALInsertLockAcquireExclusive();
 
 	checkPoint.fullPageWrites = Insert->fullPageWrites;
+	checkPoint.wal_level = wal_level;
 
 	if (shutdown)
 	{
@@ -6986,11 +7055,9 @@ CreateCheckPoint(int flags)
 	 */
 	if (!shutdown)
 	{
-		int			dummy = 0;
-
-		/* Record must have payload to avoid assertion failure. */
+		/* Include WAL level in record for WAL summarizer's benefit. */
 		XLogBeginInsert();
-		XLogRegisterData((char *) &dummy, sizeof(dummy));
+		XLogRegisterData((char *) &wal_level, sizeof(wal_level));
 		(void) XLogInsert(RM_XLOG_ID, XLOG_CHECKPOINT_REDO);
 
 		/*
@@ -7094,6 +7161,13 @@ CreateCheckPoint(int flags)
 	{
 		do
 		{
+			/*
+			 * Keep absorbing fsync requests while we wait. There could even
+			 * be a deadlock if we don't, if the process that prevents the
+			 * checkpoint is trying to add a request to the queue.
+			 */
+			AbsorbSyncRequests();
+
 			pgstat_report_wait_start(WAIT_EVENT_CHECKPOINT_DELAY_START);
 			pg_usleep(10000L);	/* wait for 10 msec */
 			pgstat_report_wait_end();
@@ -7109,6 +7183,8 @@ CreateCheckPoint(int flags)
 	{
 		do
 		{
+			AbsorbSyncRequests();
+
 			pgstat_report_wait_start(WAIT_EVENT_CHECKPOINT_DELAY_COMPLETE);
 			pg_usleep(10000L);	/* wait for 10 msec */
 			pgstat_report_wait_end();
@@ -7220,7 +7296,7 @@ CreateCheckPoint(int flags)
 	 * until after the above call that flushes the XLOG_CHECKPOINT_ONLINE
 	 * record.
 	 */
-	SetWalSummarizerLatch();
+	WakeupWalSummarizer();
 
 	/*
 	 * Let smgr do post-checkpoint cleanup (eg, deleting old files).
@@ -7283,6 +7359,8 @@ CreateCheckPoint(int flags)
 									 CheckpointStats.ckpt_segs_added,
 									 CheckpointStats.ckpt_segs_removed,
 									 CheckpointStats.ckpt_segs_recycled);
+
+	return true;
 }
 
 /*
@@ -7304,6 +7382,7 @@ CreateEndOfRecoveryRecord(void)
 		elog(ERROR, "can only be used to end recovery");
 
 	xlrec.end_time = GetCurrentTimestamp();
+	xlrec.wal_level = wal_level;
 
 	WALInsertLockAcquireExclusive();
 	xlrec.ThisTimeLineID = XLogCtl->InsertTimeLineID;
@@ -7906,7 +7985,7 @@ KeepLogSeg(XLogRecPtr recptr, XLogSegNo *logSegNo)
 	 * If WAL summarization is in use, don't remove WAL that has yet to be
 	 * summarized.
 	 */
-	keep = GetOldestUnsummarizedLSN(NULL, NULL, false);
+	keep = GetOldestUnsummarizedLSN(NULL, NULL);
 	if (keep != InvalidXLogRecPtr)
 	{
 		XLogSegNo	unsummarized_segno;
@@ -8235,6 +8314,9 @@ xlog_redo(XLogReaderState *record)
 
 			oldestActiveXID = PrescanPreparedTransactions(&xids, &nxids);
 
+			/* Update pg_subtrans entries for any prepared transactions */
+			StandbyRecoverPreparedTransactions();
+
 			/*
 			 * Construct a RunningTransactions snapshot representing a shut
 			 * down server, with only prepared transactions still alive. We're
@@ -8243,7 +8325,7 @@ xlog_redo(XLogReaderState *record)
 			 */
 			running.xcnt = nxids;
 			running.subxcnt = 0;
-			running.subxid_overflow = false;
+			running.subxid_status = SUBXIDS_IN_SUBTRANS;
 			running.nextXid = XidFromFullTransactionId(checkPoint.nextXid);
 			running.oldestRunningXid = oldestActiveXID;
 			latestCompletedXid = XidFromFullTransactionId(checkPoint.nextXid);
@@ -8253,8 +8335,6 @@ xlog_redo(XLogReaderState *record)
 			running.xids = xids;
 
 			ProcArrayApplyRecoveryInfo(&running);
-
-			StandbyRecoverPreparedTransactions();
 		}
 
 		/* ControlFile->checkPointCopy always tracks the latest ckpt XID */
@@ -8733,7 +8813,7 @@ do_pg_backup_start(const char *backupidstr, bool fast, List **tablespaces,
 				 errmsg("backup label too long (max %d bytes)",
 						MAXPGPATH)));
 
-	memcpy(state->name, backupidstr, strlen(backupidstr));
+	strlcpy(state->name, backupidstr, sizeof(state->name));
 
 	/*
 	 * Mark backup active in shared memory.  We must do full-page WAL writes
@@ -8894,10 +8974,10 @@ do_pg_backup_start(const char *backupidstr, bool fast, List **tablespaces,
 		datadirpathlen = strlen(DataDir);
 
 		/* Collect information about all tablespaces */
-		tblspcdir = AllocateDir("pg_tblspc");
-		while ((de = ReadDir(tblspcdir, "pg_tblspc")) != NULL)
+		tblspcdir = AllocateDir(PG_TBLSPC_DIR);
+		while ((de = ReadDir(tblspcdir, PG_TBLSPC_DIR)) != NULL)
 		{
-			char		fullpath[MAXPGPATH + 10];
+			char		fullpath[MAXPGPATH + sizeof(PG_TBLSPC_DIR)];
 			char		linkpath[MAXPGPATH];
 			char	   *relpath = NULL;
 			char	   *s;
@@ -8920,7 +9000,7 @@ do_pg_backup_start(const char *backupidstr, bool fast, List **tablespaces,
 			if (*badp != '\0' || errno == EINVAL || errno == ERANGE)
 				continue;
 
-			snprintf(fullpath, sizeof(fullpath), "pg_tblspc/%s", de->d_name);
+			snprintf(fullpath, sizeof(fullpath), "%s/%s", PG_TBLSPC_DIR, de->d_name);
 
 			de_type = get_dirent_type(fullpath, de, false, ERROR);
 
@@ -8981,8 +9061,8 @@ do_pg_backup_start(const char *backupidstr, bool fast, List **tablespaces,
 				 * In this case, we store a relative path rather than an
 				 * absolute path into the tablespaceinfo.
 				 */
-				snprintf(linkpath, sizeof(linkpath), "pg_tblspc/%s",
-						 de->d_name);
+				snprintf(linkpath, sizeof(linkpath), "%s/%s",
+						 PG_TBLSPC_DIR, de->d_name);
 				relpath = pstrdup(linkpath);
 			}
 			else
@@ -9061,7 +9141,7 @@ do_pg_backup_stop(BackupState *state, bool waitforarchive)
 		ereport(ERROR,
 				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
 				 errmsg("WAL level not sufficient for making an online backup"),
-				 errhint("wal_level must be set to \"replica\" or \"logical\" at server start.")));
+				 errhint("\"wal_level\" must be set to \"replica\" or \"logical\" at server start.")));
 
 	/*
 	 * OK to update backup counter and session-level lock.

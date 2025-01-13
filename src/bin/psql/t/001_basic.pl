@@ -1,5 +1,5 @@
 
-# Copyright (c) 2021-2024, PostgreSQL Global Development Group
+# Copyright (c) 2021-2025, PostgreSQL Global Development Group
 
 use strict;
 use warnings FATAL => 'all';
@@ -352,8 +352,14 @@ psql_like(
 
 # Check \watch
 # Note: the interval value is parsed with locale-aware strtod()
-psql_like($node, sprintf('SELECT 1 \watch c=3 i=%g', 0.01),
-	qr/1\n1\n1/, '\watch with 3 iterations');
+psql_like(
+	$node, sprintf('SELECT 1 \watch c=3 i=%g', 0.01),
+	qr/1\n1\n1/, '\watch with 3 iterations, interval of 0.01');
+
+# Sub-millisecond wait works, equivalent to 0.
+psql_like(
+	$node, sprintf('SELECT 1 \watch c=3 i=%g', 0.0001),
+	qr/1\n1\n1/, '\watch with 3 iterations, interval of 0.0001');
 
 # Check \watch minimum row count
 psql_fails_like(

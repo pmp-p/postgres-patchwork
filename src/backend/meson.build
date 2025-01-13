@@ -1,4 +1,4 @@
-# Copyright (c) 2022-2024, PostgreSQL Global Development Group
+# Copyright (c) 2022-2025, PostgreSQL Global Development Group
 
 backend_build_deps = [backend_code]
 backend_sources = []
@@ -133,7 +133,7 @@ postgres = executable('postgres',
   link_with: backend_link_with,
   link_depends: backend_link_depends,
   export_dynamic: true,
-  implib: true,
+  implib: 'postgres',
   dependencies: backend_build_deps,
   kwargs: default_bin_args,
 )

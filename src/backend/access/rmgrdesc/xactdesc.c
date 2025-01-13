@@ -3,7 +3,7 @@
  * xactdesc.c
  *	  rmgr descriptor routines for access/transam/xact.c
  *
- * Portions Copyright (c) 1996-2024, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2025, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -319,10 +319,13 @@ xact_desc_stats(StringInfo buf, const char *label,
 		appendStringInfo(buf, "; %sdropped stats:", label);
 		for (i = 0; i < ndropped; i++)
 		{
-			appendStringInfo(buf, " %d/%u/%u",
+			uint64		objid =
+				((uint64) dropped_stats[i].objid_hi) << 32 | dropped_stats[i].objid_lo;
+
+			appendStringInfo(buf, " %d/%u/%llu",
 							 dropped_stats[i].kind,
 							 dropped_stats[i].dboid,
-							 dropped_stats[i].objoid);
+							 (unsigned long long) objid);
 		}
 	}
 }

@@ -8,7 +8,7 @@
  *	  Structs that need to be client-visible are in pqcomm.h.
  *
  *
- * Portions Copyright (c) 1996-2024, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2025, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/libpq/libpq-be.h
@@ -204,14 +204,20 @@ typedef struct Port
 	char	   *peer_dn;
 	bool		peer_cert_valid;
 	bool		alpn_used;
+	bool		last_read_was_eof;
 
 	/*
-	 * OpenSSL structures. (Keep these last so that the locations of other
-	 * fields are the same whether or not you build with SSL enabled.)
+	 * OpenSSL structures.  As with GSSAPI above, to keep struct offsets
+	 * constant, NULL pointers are stored when SSL support is not enabled.
+	 * (Although extensions should have no business accessing the raw_buf
+	 * fields anyway.)
 	 */
 #ifdef USE_OPENSSL
 	SSL		   *ssl;
 	X509	   *peer;
+#else
+	void	   *ssl;
+	void	   *peer;
 #endif
 
 	/*

@@ -8,7 +8,7 @@
  *
  * This code is released under the terms of the PostgreSQL License.
  *
- * Portions Copyright (c) 1996-2024, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2025, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/test/regress/pg_regress.c
@@ -28,7 +28,6 @@
 
 #include "common/logging.h"
 #include "common/restricted_token.h"
-#include "common/string.h"
 #include "common/username.h"
 #include "getopt_long.h"
 #include "lib/stringinfo.h"
@@ -65,8 +64,8 @@ static char *shellprog = SHELLPROG;
 const char *basic_diff_opts = "";
 const char *pretty_diff_opts = "-U3";
 #else
-const char *basic_diff_opts = "-w";
-const char *pretty_diff_opts = "-w -U3";
+const char *basic_diff_opts = "--strip-trailing-cr";
+const char *pretty_diff_opts = "--strip-trailing-cr -U3";
 #endif
 
 /*
@@ -233,15 +232,17 @@ free_stringlist(_stringlist **listhead)
 static void
 split_to_stringlist(const char *s, const char *delim, _stringlist **listhead)
 {
-	char	   *sc = pg_strdup(s);
-	char	   *token = strtok(sc, delim);
+	char	   *token;
+	char	   *sc;
+	char	   *tofree;
 
-	while (token)
+	tofree = sc = pg_strdup(s);
+
+	while ((token = strsep(&sc, delim)))
 	{
 		add_stringlist_item(listhead, token);
-		token = strtok(NULL, delim);
 	}
-	free(sc);
+	free(tofree);
 }
 
 /*
@@ -777,7 +778,7 @@ initialize_environment(void)
 	/*
 	 * Set timezone and datestyle for datetime-related tests
 	 */
-	setenv("PGTZ", "PST8PDT", 1);
+	setenv("PGTZ", "America/Los_Angeles", 1);
 	setenv("PGDATESTYLE", "Postgres, MDY", 1);
 
 	/*
@@ -1244,7 +1245,7 @@ spawn_process(const char *cmdline)
 		comspec = "CMD";
 
 	memset(&pi, 0, sizeof(pi));
-	cmdline2 = psprintf("\"%s\" /d /c \"%s\"", comspec, cmdline);
+	cmdline2 = psprintf("\"%s\" /c \"%s\"", comspec, cmdline);
 
 	if (!CreateRestrictedProcess(cmdline2, &pi))
 		exit(2);

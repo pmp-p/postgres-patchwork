@@ -4,7 +4,7 @@
  *	  Utility routines for the Postgres inverted index access method.
  *
  *
- * Portions Copyright (c) 1996-2024, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2025, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -69,6 +69,7 @@ ginhandler(PG_FUNCTION_ARGS)
 	amroutine->amvacuumcleanup = ginvacuumcleanup;
 	amroutine->amcanreturn = NULL;
 	amroutine->amcostestimate = gincostestimate;
+	amroutine->amgettreeheight = NULL;
 	amroutine->amoptions = ginoptions;
 	amroutine->amproperty = NULL;
 	amroutine->ambuildphasename = NULL;

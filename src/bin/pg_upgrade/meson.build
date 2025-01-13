@@ -1,4 +1,4 @@
-# Copyright (c) 2022-2024, PostgreSQL Global Development Group
+# Copyright (c) 2022-2025, PostgreSQL Global Development Group
 
 pg_upgrade_sources = files(
   'check.c',
@@ -14,6 +14,7 @@ pg_upgrade_sources = files(
   'relfilenumber.c',
   'server.c',
   'tablespace.c',
+  'task.c',
   'util.c',
   'version.c',
 )

@@ -1,4 +1,4 @@
-# Copyright (c) 2021-2024, PostgreSQL Global Development Group
+# Copyright (c) 2021-2025, PostgreSQL Global Development Group
 #
 # This test aims to validate that restoring an incremental backup works
 # properly even when the reference backup is on a different timeline.
@@ -9,6 +9,11 @@ use File::Compare;
 use PostgreSQL::Test::Cluster;
 use PostgreSQL::Test::Utils;
 use Test::More;
+
+# Can be changed to test the other modes.
+my $mode = $ENV{PG_TEST_PG_COMBINEBACKUP_MODE} || '--copy';
+
+note "testing using mode $mode";
 
 # Set up a new database instance.
 my $node1 = PostgreSQL::Test::Cluster->new('node1');
@@ -67,8 +72,10 @@ $node2->command_ok(
 
 # Restore the incremental backup and use it to create a new node.
 my $node3 = PostgreSQL::Test::Cluster->new('node3');
-$node3->init_from_backup($node1, 'backup3',
-	combine_with_prior => [ 'backup1', 'backup2' ]);
+$node3->init_from_backup(
+	$node1, 'backup3',
+	combine_with_prior => [ 'backup1', 'backup2' ],
+	combine_mode => $mode);
 $node3->start();
 
 # Let's insert one more row.

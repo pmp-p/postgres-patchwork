@@ -4,7 +4,7 @@
  *	  local buffer manager. Fast buffer manager for temporary tables,
  *	  which never need to be WAL-logged or checkpointed, etc.
  *
- * Portions Copyright (c) 1996-2024, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2025, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994-5, Regents of the University of California
  *
  *
@@ -279,7 +279,7 @@ GetLocalVictimBuffer(void)
 		ClearBufferTag(&bufHdr->tag);
 		buf_state &= ~(BUF_FLAG_MASK | BUF_USAGECOUNT_MASK);
 		pg_atomic_unlocked_write_u32(&bufHdr->state, buf_state);
-		pgstat_count_io_op(IOOBJECT_TEMP_RELATION, IOCONTEXT_NORMAL, IOOP_EVICT);
+		pgstat_count_io_op(IOOBJECT_TEMP_RELATION, IOCONTEXT_NORMAL, IOOP_EVICT, 1);
 	}
 
 	return BufferDescriptorGetBuffer(bufHdr);
@@ -379,7 +379,7 @@ ExtendBufferedRelLocal(BufferManagerRelation bmr,
 		InitBufferTag(&tag, &bmr.smgr->smgr_rlocator.locator, fork, first_block + i);
 
 		hresult = (LocalBufferLookupEnt *)
-			hash_search(LocalBufHash, (void *) &tag, HASH_ENTER, &found);
+			hash_search(LocalBufHash, &tag, HASH_ENTER, &found);
 		if (found)
 		{
 			BufferDesc *existing_hdr;

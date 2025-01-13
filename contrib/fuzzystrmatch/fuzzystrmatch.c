@@ -6,7 +6,7 @@
  * Joe Conway <mail@joeconway.com>
  *
  * contrib/fuzzystrmatch/fuzzystrmatch.c
- * Copyright (c) 2001-2024, PostgreSQL Global Development Group
+ * Copyright (c) 2001-2025, PostgreSQL Global Development Group
  * ALL RIGHTS RESERVED;
  *
  * metaphone()
@@ -40,7 +40,6 @@
 
 #include <ctype.h>
 
-#include "mb/pg_wchar.h"
 #include "utils/builtins.h"
 #include "utils/varlena.h"
 #include "varatt.h"

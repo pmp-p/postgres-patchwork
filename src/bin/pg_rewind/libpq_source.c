@@ -3,7 +3,7 @@
  * libpq_source.c
  *	  Functions for fetching files from a remote server via libpq.
  *
- * Copyright (c) 2013-2024, PostgreSQL Global Development Group
+ * Copyright (c) 2013-2025, PostgreSQL Global Development Group
  *
  *-------------------------------------------------------------------------
  */
@@ -11,7 +11,6 @@
 
 #include "catalog/pg_type_d.h"
 #include "common/connect.h"
-#include "datapagemap.h"
 #include "file_ops.h"
 #include "filemap.h"
 #include "lib/stringinfo.h"
@@ -294,7 +293,7 @@ libpq_traverse_files(rewind_source *source, process_file_callback_t callback)
 		}
 
 		path = PQgetvalue(res, i, 0);
-		filesize = atol(PQgetvalue(res, i, 1));
+		filesize = atoll(PQgetvalue(res, i, 1));
 		isdir = (strcmp(PQgetvalue(res, i, 2), "t") == 0);
 		link_target = PQgetvalue(res, i, 3);
 

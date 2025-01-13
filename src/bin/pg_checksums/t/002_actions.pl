@@ -1,5 +1,5 @@
 
-# Copyright (c) 2021-2024, PostgreSQL Global Development Group
+# Copyright (c) 2021-2025, PostgreSQL Global Development Group
 
 # Do basic sanity checks supported by pg_checksums using
 # an initialized cluster.
@@ -88,7 +88,7 @@ sub check_relation_corruption
 
 # Initialize node with checksums disabled.
 my $node = PostgreSQL::Test::Cluster->new('node_checksum');
-$node->init();
+$node->init(no_data_checksums => 1);
 my $pgdata = $node->data_dir;
 
 # Control file should know that checksums are disabled.

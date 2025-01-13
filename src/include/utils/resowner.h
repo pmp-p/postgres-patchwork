@@ -9,7 +9,7 @@
  * See utils/resowner/README for more info.
  *
  *
- * Portions Copyright (c) 1996-2024, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2025, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/utils/resowner.h
@@ -146,8 +146,8 @@ extern void ResourceOwnerNewParent(ResourceOwner owner,
 								   ResourceOwner newparent);
 
 extern void ResourceOwnerEnlarge(ResourceOwner owner);
-extern void ResourceOwnerRemember(ResourceOwner owner, Datum res, const ResourceOwnerDesc *kind);
-extern void ResourceOwnerForget(ResourceOwner owner, Datum res, const ResourceOwnerDesc *kind);
+extern void ResourceOwnerRemember(ResourceOwner owner, Datum value, const ResourceOwnerDesc *kind);
+extern void ResourceOwnerForget(ResourceOwner owner, Datum value, const ResourceOwnerDesc *kind);
 
 extern void ResourceOwnerReleaseAllOfKind(ResourceOwner owner, const ResourceOwnerDesc *kind);
 

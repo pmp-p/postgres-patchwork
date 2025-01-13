@@ -1,13 +1,18 @@
-# Copyright (c) 2021-2024, PostgreSQL Global Development Group
+# Copyright (c) 2021-2025, PostgreSQL Global Development Group
 
 use strict;
 use warnings FATAL => 'all';
-use File::Compare;
+use File::Compare qw(compare_text);
 use PostgreSQL::Test::Cluster;
 use PostgreSQL::Test::Utils;
 use Test::More;
 
 my $tempdir = PostgreSQL::Test::Utils::tempdir_short();
+
+# Can be changed to test the other modes.
+my $mode = $ENV{PG_TEST_PG_COMBINEBACKUP_MODE} || '--copy';
+
+note "testing using mode $mode";
 
 # Set up a new database instance.
 my $primary = PostgreSQL::Test::Cluster->new('primary');
@@ -134,7 +139,8 @@ $pitr2->init_from_backup(
 	standby => 1,
 	has_restoring => 1,
 	combine_with_prior => ['backup1'],
-	tablespace_map => { $tsbackup2path => $tspitr2path });
+	tablespace_map => { $tsbackup2path => $tspitr2path },
+	combine_mode => $mode);
 $pitr2->append_conf(
 	'postgresql.conf', qq{
 recovery_target_lsn = '$lsn'
@@ -169,17 +175,23 @@ $pitr1->command_ok(
 		$pitr1->connstr('postgres'),
 	],
 	'dump from PITR 1');
-$pitr1->command_ok(
+$pitr2->command_ok(
 	[
 		'pg_dumpall', '-f',
 		$dump2, '--no-sync',
 		'--no-unlogged-table-data', '-d',
-		$pitr1->connstr('postgres'),
+		$pitr2->connstr('postgres'),
 	],
 	'dump from PITR 2');
 
-# Compare the two dumps, there should be no differences.
-my $compare_res = compare($dump1, $dump2);
+# Compare the two dumps, there should be no differences other than
+# the tablespace paths.
+my $compare_res = compare_text(
+	$dump1, $dump2,
+	sub {
+		s{create tablespace .* location .*\btspitr\K[12]}{N}i for @_;
+		return $_[0] ne $_[1];
+	});
 note($dump1);
 note($dump2);
 is($compare_res, 0, "dumps are identical");

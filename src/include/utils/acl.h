@@ -4,7 +4,7 @@
  *	  Definition of (and support for) access control list data structures.
  *
  *
- * Portions Copyright (c) 1996-2024, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2025, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/utils/acl.h
@@ -276,6 +276,8 @@ extern void aclcheck_error_type(AclResult aclerr, Oid typeOid);
 
 extern void recordExtObjInitPriv(Oid objoid, Oid classoid);
 extern void removeExtObjInitPriv(Oid objoid, Oid classoid);
+extern void ReplaceRoleInInitPriv(Oid oldroleid, Oid newroleid,
+								  Oid classid, Oid objid, int32 objsubid);
 extern void RemoveRoleFromInitPriv(Oid roleid,
 								   Oid classid, Oid objid, int32 objsubid);
 

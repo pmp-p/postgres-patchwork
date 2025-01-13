@@ -1,4 +1,4 @@
-# Copyright (c) 2021-2024, PostgreSQL Global Development Group
+# Copyright (c) 2021-2025, PostgreSQL Global Development Group
 
 use strict;
 use warnings FATAL => 'all';
@@ -6,6 +6,11 @@ use File::Compare;
 use PostgreSQL::Test::Cluster;
 use PostgreSQL::Test::Utils;
 use Test::More;
+
+# Can be changed to test the other modes.
+my $mode = $ENV{PG_TEST_PG_COMBINEBACKUP_MODE} || '--copy';
+
+note "testing using mode $mode";
 
 # Set up a new database instance.
 my $primary = PostgreSQL::Test::Cluster->new('primary');
@@ -44,8 +49,10 @@ $primary->command_ok(
 
 # Recover the incremental backup.
 my $restore = PostgreSQL::Test::Cluster->new('restore');
-$restore->init_from_backup($primary, 'backup2',
-	combine_with_prior => ['backup1']);
+$restore->init_from_backup(
+	$primary, 'backup2',
+	combine_with_prior => ['backup1'],
+	combine_mode => $mode);
 $restore->start();
 
 # Query the DB.

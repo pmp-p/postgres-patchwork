@@ -227,7 +227,7 @@ PostgreSQL documentation
       </listitem>
      </varlistentry>
 
-     <varlistentry id="app-initdb-allow-group-access" xreflabel="group access">
+     <varlistentry id="app-initdb-allow-group-access">
       <term><option>-g</option></term>
       <term><option>--allow-group-access</option></term>
       <listitem>
@@ -260,14 +260,20 @@ PostgreSQL documentation
       </listitem>
      </varlistentry>
 
-     <varlistentry id="app-initdb-data-checksums" xreflabel="data checksums">
+     <varlistentry id="app-initdb-data-checksums">
       <term><option>-k</option></term>
       <term><option>--data-checksums</option></term>
       <listitem>
        <para>
-        Use checksums on data pages to help detect corruption by the
-        I/O system that would otherwise be silent. Enabling checksums
-        may incur a noticeable performance penalty. If set, checksums
+        Use checksums on data pages to help detect corruption by the I/O
+        system that would otherwise be silent.  This is enabled by default;
+        use <xref linkend="app-initdb-no-data-checksums"/> to disable
+        checksums.
+       </para>
+
+       <para>
+        Enabling checksums
+        might incur a small performance penalty. If set, checksums
         are calculated for all objects, in all databases. All checksum
         failures will be reported in the
         <link linkend="monitoring-pg-stat-database-view">
@@ -339,6 +345,15 @@ PostgreSQL documentation
         DATABASE</command> command when new databases are subsequently
         created.  The default is <literal>libc</literal> (see <xref
         linkend="locale-providers"/>).
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="app-initdb-no-data-checksums">
+      <term><option>--no-data-checksums</option></term>
+      <listitem>
+       <para>
+        Do not enable data checksums.
        </para>
       </listitem>
      </varlistentry>
@@ -521,6 +536,18 @@ PostgreSQL documentation
         those instructions to be left out. This is primarily intended for use
         by tools that wrap <command>initdb</command> in platform-specific
         behavior, where those instructions are likely to be incorrect.
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="app-initdb-option-show">
+      <term><option>-s</option></term>
+      <term><option>--show</option></term>
+      <listitem>
+       <para>
+        Show internal settings and exit, without doing anything else.  This
+        can be used to debug the <application>initdb</application>
+        installation.
        </para>
       </listitem>
      </varlistentry>

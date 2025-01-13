@@ -3,7 +3,7 @@
  *
  *	options functions
  *
- *	Copyright (c) 2010-2024, PostgreSQL Global Development Group
+ *	Copyright (c) 2010-2025, PostgreSQL Global Development Group
  *	src/bin/pg_upgrade/option.c
  */
 
@@ -470,10 +470,10 @@ adjust_data_dir(ClusterInfo *cluster)
  * directory.
  */
 void
-get_sock_dir(ClusterInfo *cluster, bool live_check)
+get_sock_dir(ClusterInfo *cluster)
 {
 #if !defined(WIN32)
-	if (!live_check)
+	if (!user_opts.live_check || cluster == &new_cluster)
 		cluster->sockdir = user_opts.socketdir;
 	else
 	{

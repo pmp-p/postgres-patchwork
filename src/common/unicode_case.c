@@ -2,7 +2,7 @@
  * unicode_case.c
  *		Unicode case mapping and case conversion.
  *
- * Portions Copyright (c) 2017-2024, PostgreSQL Global Development Group
+ * Portions Copyright (c) 2017-2025, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
  *	  src/common/unicode_case.c
@@ -17,7 +17,6 @@
 
 #include "common/unicode_case.h"
 #include "common/unicode_case_table.h"
-#include "common/unicode_category.h"
 #include "mb/pg_wchar.h"
 
 static const pg_case_map *find_case_map(pg_wchar ucs);

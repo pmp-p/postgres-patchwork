@@ -3,7 +3,7 @@
  * parse_manifest.c
  *	  Parse a backup manifest in JSON format.
  *
- * Portions Copyright (c) 1996-2024, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2025, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/common/parse_manifest.c
@@ -112,7 +112,7 @@ static void json_manifest_finalize_system_identifier(JsonManifestParseState *par
 static void json_manifest_finalize_file(JsonManifestParseState *parse);
 static void json_manifest_finalize_wal_range(JsonManifestParseState *parse);
 static void verify_manifest_checksum(JsonManifestParseState *parse,
-									 char *buffer, size_t size,
+									 const char *buffer, size_t size,
 									 pg_cryptohash_ctx *incr_ctx);
 static void json_manifest_parse_failure(JsonManifestParseContext *context,
 										char *msg);
@@ -182,9 +182,8 @@ json_parse_manifest_incremental_shutdown(JsonManifestParseIncrementalState *incs
  */
 
 void
-json_parse_manifest_incremental_chunk(
-									  JsonManifestParseIncrementalState *incstate, char *chunk, int size,
-									  bool is_last)
+json_parse_manifest_incremental_chunk(JsonManifestParseIncrementalState *incstate,
+									  const char *chunk, size_t size, bool is_last)
 {
 	JsonParseErrorType res,
 				expected;
@@ -206,7 +205,7 @@ json_parse_manifest_incremental_chunk(
 	if (!is_last)
 	{
 		if (pg_cryptohash_update(incstate->manifest_ctx,
-								 (uint8 *) chunk, size) < 0)
+								 (const uint8 *) chunk, size) < 0)
 			context->error_cb(context, "could not update checksum of manifest");
 	}
 	else
@@ -225,7 +224,7 @@ json_parse_manifest_incremental_chunk(
  * invoked and is expected not to return.
  */
 void
-json_parse_manifest(JsonManifestParseContext *context, char *buffer,
+json_parse_manifest(JsonManifestParseContext *context, const char *buffer,
 					size_t size)
 {
 	JsonLexContext *lex;
@@ -634,7 +633,7 @@ json_manifest_finalize_system_identifier(JsonManifestParseState *parse)
 	system_identifier = strtou64(parse->manifest_system_identifier, &ep, 10);
 	if (*ep)
 		json_manifest_parse_failure(parse->context,
-									"manifest system identifier not an integer");
+									"system identifier in manifest not an integer");
 
 	/* Invoke the callback for system identifier */
 	context->system_identifier_cb(context, system_identifier);
@@ -650,7 +649,7 @@ static void
 json_manifest_finalize_file(JsonManifestParseState *parse)
 {
 	JsonManifestParseContext *context = parse->context;
-	size_t		size;
+	uint64		size;
 	char	   *ep;
 	int			checksum_string_length;
 	pg_checksum_type checksum_type;
@@ -688,7 +687,7 @@ json_manifest_finalize_file(JsonManifestParseState *parse)
 	}
 
 	/* Parse size. */
-	size = strtoul(parse->size, &ep, 10);
+	size = strtou64(parse->size, &ep, 10);
 	if (*ep)
 		json_manifest_parse_failure(parse->context,
 									"file size is not an integer");
@@ -810,7 +809,7 @@ json_manifest_finalize_wal_range(JsonManifestParseState *parse)
  * parse incr_ctx will be NULL.
  */
 static void
-verify_manifest_checksum(JsonManifestParseState *parse, char *buffer,
+verify_manifest_checksum(JsonManifestParseState *parse, const char *buffer,
 						 size_t size, pg_cryptohash_ctx *incr_ctx)
 {
 	JsonManifestParseContext *context = parse->context;
@@ -858,7 +857,7 @@ verify_manifest_checksum(JsonManifestParseState *parse, char *buffer,
 	{
 		manifest_ctx = incr_ctx;
 	}
-	if (pg_cryptohash_update(manifest_ctx, (uint8 *) buffer, penultimate_newline + 1) < 0)
+	if (pg_cryptohash_update(manifest_ctx, (const uint8 *) buffer, penultimate_newline + 1) < 0)
 		context->error_cb(context, "could not update checksum of manifest");
 	if (pg_cryptohash_final(manifest_ctx, manifest_checksum_actual,
 							sizeof(manifest_checksum_actual)) < 0)

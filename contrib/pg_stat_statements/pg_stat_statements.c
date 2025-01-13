@@ -34,7 +34,7 @@
  * in the file to be read or written while holding only shared lock.
  *
  *
- * Copyright (c) 2008-2024, PostgreSQL Global Development Group
+ * Copyright (c) 2008-2025, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
  *	  contrib/pg_stat_statements/pg_stat_statements.c
@@ -49,7 +49,6 @@
 
 #include "access/parallel.h"
 #include "catalog/pg_authid.h"
-#include "common/hashfn.h"
 #include "common/int.h"
 #include "executor/instrument.h"
 #include "funcapi.h"
@@ -59,9 +58,7 @@
 #include "nodes/queryjumble.h"
 #include "optimizer/planner.h"
 #include "parser/analyze.h"
-#include "parser/parsetree.h"
 #include "parser/scanner.h"
-#include "parser/scansup.h"
 #include "pgstat.h"
 #include "storage/fd.h"
 #include "storage/ipc.h"
@@ -113,6 +110,7 @@ typedef enum pgssVersion
 	PGSS_V1_9,
 	PGSS_V1_10,
 	PGSS_V1_11,
+	PGSS_V1_12,
 } pgssVersion;
 
 typedef enum pgssStoreKind
@@ -126,9 +124,9 @@ typedef enum pgssStoreKind
 	 */
 	PGSS_PLAN = 0,
 	PGSS_EXEC,
-
-	PGSS_NUMKIND				/* Must be last value of this enum */
 } pgssStoreKind;
+
+#define PGSS_NUMKIND (PGSS_EXEC + 1)
 
 /*
  * Hashtable key that defines the identity of a hashtable entry.  We separate
@@ -204,6 +202,10 @@ typedef struct Counters
 	int64		jit_emission_count; /* number of times emission time has been
 									 * > 0 */
 	double		jit_emission_time;	/* total time to emit jit code */
+	int64		parallel_workers_to_launch; /* # of parallel workers planned
+											 * to be launched */
+	int64		parallel_workers_launched;	/* # of parallel workers actually
+											 * launched */
 } Counters;
 
 /*
@@ -254,7 +256,7 @@ typedef struct pgssSharedState
 /* Current nesting depth of planner/ExecutorRun/ProcessUtility calls */
 static int	nesting_level = 0;
 
-/* Saved hook values in case of unload */
+/* Saved hook values */
 static shmem_request_hook_type prev_shmem_request_hook = NULL;
 static shmem_startup_hook_type prev_shmem_startup_hook = NULL;
 static post_parse_analyze_hook_type prev_post_parse_analyze_hook = NULL;
@@ -301,10 +303,9 @@ static bool pgss_save = true;	/* whether to save stats across shutdown */
 
 #define record_gc_qtexts() \
 	do { \
-		volatile pgssSharedState *s = (volatile pgssSharedState *) pgss; \
-		SpinLockAcquire(&s->mutex); \
-		s->gc_count++; \
-		SpinLockRelease(&s->mutex); \
+		SpinLockAcquire(&pgss->mutex); \
+		pgss->gc_count++; \
+		SpinLockRelease(&pgss->mutex); \
 	} while(0)
 
 /*---- Function declarations ----*/
@@ -318,6 +319,7 @@ PG_FUNCTION_INFO_V1(pg_stat_statements_1_8);
 PG_FUNCTION_INFO_V1(pg_stat_statements_1_9);
 PG_FUNCTION_INFO_V1(pg_stat_statements_1_10);
 PG_FUNCTION_INFO_V1(pg_stat_statements_1_11);
+PG_FUNCTION_INFO_V1(pg_stat_statements_1_12);
 PG_FUNCTION_INFO_V1(pg_stat_statements);
 PG_FUNCTION_INFO_V1(pg_stat_statements_info);
 
@@ -333,7 +335,7 @@ static PlannedStmt *pgss_planner(Query *parse,
 static void pgss_ExecutorStart(QueryDesc *queryDesc, int eflags);
 static void pgss_ExecutorRun(QueryDesc *queryDesc,
 							 ScanDirection direction,
-							 uint64 count, bool execute_once);
+							 uint64 count);
 static void pgss_ExecutorFinish(QueryDesc *queryDesc);
 static void pgss_ExecutorEnd(QueryDesc *queryDesc);
 static void pgss_ProcessUtility(PlannedStmt *pstmt, const char *queryString,
@@ -348,7 +350,9 @@ static void pgss_store(const char *query, uint64 queryId,
 					   const BufferUsage *bufusage,
 					   const WalUsage *walusage,
 					   const struct JitInstrumentation *jitusage,
-					   JumbleState *jstate);
+					   JumbleState *jstate,
+					   int parallel_workers_to_launch,
+					   int parallel_workers_launched);
 static void pg_stat_statements_internal(FunctionCallInfo fcinfo,
 										pgssVersion api_version,
 										bool showtext);
@@ -868,7 +872,9 @@ pgss_post_parse_analyze(ParseState *pstate, Query *query, JumbleState *jstate)
 				   NULL,
 				   NULL,
 				   NULL,
-				   jstate);
+				   jstate,
+				   0,
+				   0);
 }
 
 /*
@@ -887,13 +893,6 @@ pgss_planner(Query *parse,
 	 * We can't process the query if no query_string is provided, as
 	 * pgss_store needs it.  We also ignore query without queryid, as it would
 	 * be treated as a utility statement, which may not be the case.
-	 *
-	 * Note that planner_hook can be called from the planner itself, so we
-	 * have a specific nesting level for the planner.  However, utility
-	 * commands containing optimizable statements can also call the planner,
-	 * same for regular DML (for instance for underlying foreign key queries).
-	 * So testing the planner nesting level only is not enough to detect real
-	 * top level planner call.
 	 */
 	if (pgss_enabled(nesting_level)
 		&& pgss_track_planning && query_string
@@ -953,7 +952,9 @@ pgss_planner(Query *parse,
 				   &bufusage,
 				   &walusage,
 				   NULL,
-				   NULL);
+				   NULL,
+				   0,
+				   0);
 	}
 	else
 	{
@@ -1020,16 +1021,15 @@ pgss_ExecutorStart(QueryDesc *queryDesc, int eflags)
  * ExecutorRun hook: all we need do is track nesting depth
  */
 static void
-pgss_ExecutorRun(QueryDesc *queryDesc, ScanDirection direction, uint64 count,
-				 bool execute_once)
+pgss_ExecutorRun(QueryDesc *queryDesc, ScanDirection direction, uint64 count)
 {
 	nesting_level++;
 	PG_TRY();
 	{
 		if (prev_ExecutorRun)
-			prev_ExecutorRun(queryDesc, direction, count, execute_once);
+			prev_ExecutorRun(queryDesc, direction, count);
 		else
-			standard_ExecutorRun(queryDesc, direction, count, execute_once);
+			standard_ExecutorRun(queryDesc, direction, count);
 	}
 	PG_FINALLY();
 	{
@@ -1086,7 +1086,9 @@ pgss_ExecutorEnd(QueryDesc *queryDesc)
 				   &queryDesc->totaltime->bufusage,
 				   &queryDesc->totaltime->walusage,
 				   queryDesc->estate->es_jit ? &queryDesc->estate->es_jit->instr : NULL,
-				   NULL);
+				   NULL,
+				   queryDesc->estate->es_parallel_workers_to_launch,
+				   queryDesc->estate->es_parallel_workers_launched);
 	}
 
 	if (prev_ExecutorEnd)
@@ -1217,7 +1219,9 @@ pgss_ProcessUtility(PlannedStmt *pstmt, const char *queryString,
 				   &bufusage,
 				   &walusage,
 				   NULL,
-				   NULL);
+				   NULL,
+				   0,
+				   0);
 	}
 	else
 	{
@@ -1278,7 +1282,9 @@ pgss_store(const char *query, uint64 queryId,
 		   const BufferUsage *bufusage,
 		   const WalUsage *walusage,
 		   const struct JitInstrumentation *jitusage,
-		   JumbleState *jstate)
+		   JumbleState *jstate,
+		   int parallel_workers_to_launch,
+		   int parallel_workers_launched)
 {
 	pgssHashKey key;
 	pgssEntry  *entry;
@@ -1386,28 +1392,26 @@ pgss_store(const char *query, uint64 queryId,
 	/* Increment the counts, except when jstate is not NULL */
 	if (!jstate)
 	{
+		Assert(kind == PGSS_PLAN || kind == PGSS_EXEC);
+
 		/*
 		 * Grab the spinlock while updating the counters (see comment about
 		 * locking rules at the head of the file)
 		 */
-		volatile pgssEntry *e = (volatile pgssEntry *) entry;
-
-		Assert(kind == PGSS_PLAN || kind == PGSS_EXEC);
-
-		SpinLockAcquire(&e->mutex);
+		SpinLockAcquire(&entry->mutex);
 
 		/* "Unstick" entry if it was previously sticky */
-		if (IS_STICKY(e->counters))
-			e->counters.usage = USAGE_INIT;
+		if (IS_STICKY(entry->counters))
+			entry->counters.usage = USAGE_INIT;
 
-		e->counters.calls[kind] += 1;
-		e->counters.total_time[kind] += total_time;
+		entry->counters.calls[kind] += 1;
+		entry->counters.total_time[kind] += total_time;
 
-		if (e->counters.calls[kind] == 1)
+		if (entry->counters.calls[kind] == 1)
 		{
-			e->counters.min_time[kind] = total_time;
-			e->counters.max_time[kind] = total_time;
-			e->counters.mean_time[kind] = total_time;
+			entry->counters.min_time[kind] = total_time;
+			entry->counters.max_time[kind] = total_time;
+			entry->counters.mean_time[kind] = total_time;
 		}
 		else
 		{
@@ -1415,75 +1419,79 @@ pgss_store(const char *query, uint64 queryId,
 			 * Welford's method for accurately computing variance. See
 			 * <http://www.johndcook.com/blog/standard_deviation/>
 			 */
-			double		old_mean = e->counters.mean_time[kind];
+			double		old_mean = entry->counters.mean_time[kind];
 
-			e->counters.mean_time[kind] +=
-				(total_time - old_mean) / e->counters.calls[kind];
-			e->counters.sum_var_time[kind] +=
-				(total_time - old_mean) * (total_time - e->counters.mean_time[kind]);
+			entry->counters.mean_time[kind] +=
+				(total_time - old_mean) / entry->counters.calls[kind];
+			entry->counters.sum_var_time[kind] +=
+				(total_time - old_mean) * (total_time - entry->counters.mean_time[kind]);
 
 			/*
 			 * Calculate min and max time. min = 0 and max = 0 means that the
 			 * min/max statistics were reset
 			 */
-			if (e->counters.min_time[kind] == 0
-				&& e->counters.max_time[kind] == 0)
+			if (entry->counters.min_time[kind] == 0
+				&& entry->counters.max_time[kind] == 0)
 			{
-				e->counters.min_time[kind] = total_time;
-				e->counters.max_time[kind] = total_time;
+				entry->counters.min_time[kind] = total_time;
+				entry->counters.max_time[kind] = total_time;
 			}
 			else
 			{
-				if (e->counters.min_time[kind] > total_time)
-					e->counters.min_time[kind] = total_time;
-				if (e->counters.max_time[kind] < total_time)
-					e->counters.max_time[kind] = total_time;
+				if (entry->counters.min_time[kind] > total_time)
+					entry->counters.min_time[kind] = total_time;
+				if (entry->counters.max_time[kind] < total_time)
+					entry->counters.max_time[kind] = total_time;
 			}
 		}
-		e->counters.rows += rows;
-		e->counters.shared_blks_hit += bufusage->shared_blks_hit;
-		e->counters.shared_blks_read += bufusage->shared_blks_read;
-		e->counters.shared_blks_dirtied += bufusage->shared_blks_dirtied;
-		e->counters.shared_blks_written += bufusage->shared_blks_written;
-		e->counters.local_blks_hit += bufusage->local_blks_hit;
-		e->counters.local_blks_read += bufusage->local_blks_read;
-		e->counters.local_blks_dirtied += bufusage->local_blks_dirtied;
-		e->counters.local_blks_written += bufusage->local_blks_written;
-		e->counters.temp_blks_read += bufusage->temp_blks_read;
-		e->counters.temp_blks_written += bufusage->temp_blks_written;
-		e->counters.shared_blk_read_time += INSTR_TIME_GET_MILLISEC(bufusage->shared_blk_read_time);
-		e->counters.shared_blk_write_time += INSTR_TIME_GET_MILLISEC(bufusage->shared_blk_write_time);
-		e->counters.local_blk_read_time += INSTR_TIME_GET_MILLISEC(bufusage->local_blk_read_time);
-		e->counters.local_blk_write_time += INSTR_TIME_GET_MILLISEC(bufusage->local_blk_write_time);
-		e->counters.temp_blk_read_time += INSTR_TIME_GET_MILLISEC(bufusage->temp_blk_read_time);
-		e->counters.temp_blk_write_time += INSTR_TIME_GET_MILLISEC(bufusage->temp_blk_write_time);
-		e->counters.usage += USAGE_EXEC(total_time);
-		e->counters.wal_records += walusage->wal_records;
-		e->counters.wal_fpi += walusage->wal_fpi;
-		e->counters.wal_bytes += walusage->wal_bytes;
+		entry->counters.rows += rows;
+		entry->counters.shared_blks_hit += bufusage->shared_blks_hit;
+		entry->counters.shared_blks_read += bufusage->shared_blks_read;
+		entry->counters.shared_blks_dirtied += bufusage->shared_blks_dirtied;
+		entry->counters.shared_blks_written += bufusage->shared_blks_written;
+		entry->counters.local_blks_hit += bufusage->local_blks_hit;
+		entry->counters.local_blks_read += bufusage->local_blks_read;
+		entry->counters.local_blks_dirtied += bufusage->local_blks_dirtied;
+		entry->counters.local_blks_written += bufusage->local_blks_written;
+		entry->counters.temp_blks_read += bufusage->temp_blks_read;
+		entry->counters.temp_blks_written += bufusage->temp_blks_written;
+		entry->counters.shared_blk_read_time += INSTR_TIME_GET_MILLISEC(bufusage->shared_blk_read_time);
+		entry->counters.shared_blk_write_time += INSTR_TIME_GET_MILLISEC(bufusage->shared_blk_write_time);
+		entry->counters.local_blk_read_time += INSTR_TIME_GET_MILLISEC(bufusage->local_blk_read_time);
+		entry->counters.local_blk_write_time += INSTR_TIME_GET_MILLISEC(bufusage->local_blk_write_time);
+		entry->counters.temp_blk_read_time += INSTR_TIME_GET_MILLISEC(bufusage->temp_blk_read_time);
+		entry->counters.temp_blk_write_time += INSTR_TIME_GET_MILLISEC(bufusage->temp_blk_write_time);
+		entry->counters.usage += USAGE_EXEC(total_time);
+		entry->counters.wal_records += walusage->wal_records;
+		entry->counters.wal_fpi += walusage->wal_fpi;
+		entry->counters.wal_bytes += walusage->wal_bytes;
 		if (jitusage)
 		{
-			e->counters.jit_functions += jitusage->created_functions;
-			e->counters.jit_generation_time += INSTR_TIME_GET_MILLISEC(jitusage->generation_counter);
+			entry->counters.jit_functions += jitusage->created_functions;
+			entry->counters.jit_generation_time += INSTR_TIME_GET_MILLISEC(jitusage->generation_counter);
 
 			if (INSTR_TIME_GET_MILLISEC(jitusage->deform_counter))
-				e->counters.jit_deform_count++;
-			e->counters.jit_deform_time += INSTR_TIME_GET_MILLISEC(jitusage->deform_counter);
+				entry->counters.jit_deform_count++;
+			entry->counters.jit_deform_time += INSTR_TIME_GET_MILLISEC(jitusage->deform_counter);
 
 			if (INSTR_TIME_GET_MILLISEC(jitusage->inlining_counter))
-				e->counters.jit_inlining_count++;
-			e->counters.jit_inlining_time += INSTR_TIME_GET_MILLISEC(jitusage->inlining_counter);
+				entry->counters.jit_inlining_count++;
+			entry->counters.jit_inlining_time += INSTR_TIME_GET_MILLISEC(jitusage->inlining_counter);
 
 			if (INSTR_TIME_GET_MILLISEC(jitusage->optimization_counter))
-				e->counters.jit_optimization_count++;
-			e->counters.jit_optimization_time += INSTR_TIME_GET_MILLISEC(jitusage->optimization_counter);
+				entry->counters.jit_optimization_count++;
+			entry->counters.jit_optimization_time += INSTR_TIME_GET_MILLISEC(jitusage->optimization_counter);
 
 			if (INSTR_TIME_GET_MILLISEC(jitusage->emission_counter))
-				e->counters.jit_emission_count++;
-			e->counters.jit_emission_time += INSTR_TIME_GET_MILLISEC(jitusage->emission_counter);
+				entry->counters.jit_emission_count++;
+			entry->counters.jit_emission_time += INSTR_TIME_GET_MILLISEC(jitusage->emission_counter);
 		}
 
-		SpinLockRelease(&e->mutex);
+		/* parallel worker counters */
+		entry->counters.parallel_workers_to_launch += parallel_workers_to_launch;
+		entry->counters.parallel_workers_launched += parallel_workers_launched;
+
+		SpinLockRelease(&entry->mutex);
 	}
 
 done:
@@ -1549,7 +1557,8 @@ pg_stat_statements_reset(PG_FUNCTION_ARGS)
 #define PG_STAT_STATEMENTS_COLS_V1_9	33
 #define PG_STAT_STATEMENTS_COLS_V1_10	43
 #define PG_STAT_STATEMENTS_COLS_V1_11	49
-#define PG_STAT_STATEMENTS_COLS			49	/* maximum of above */
+#define PG_STAT_STATEMENTS_COLS_V1_12	51
+#define PG_STAT_STATEMENTS_COLS			51	/* maximum of above */
 
 /*
  * Retrieve statement statistics.
@@ -1561,6 +1570,16 @@ pg_stat_statements_reset(PG_FUNCTION_ARGS)
  * expected API version is identified by embedding it in the C name of the
  * function.  Unfortunately we weren't bright enough to do that for 1.1.
  */
+Datum
+pg_stat_statements_1_12(PG_FUNCTION_ARGS)
+{
+	bool		showtext = PG_GETARG_BOOL(0);
+
+	pg_stat_statements_internal(fcinfo, PGSS_V1_12, showtext);
+
+	return (Datum) 0;
+}
+
 Datum
 pg_stat_statements_1_11(PG_FUNCTION_ARGS)
 {
@@ -1705,6 +1724,10 @@ pg_stat_statements_internal(FunctionCallInfo fcinfo,
 			if (api_version != PGSS_V1_11)
 				elog(ERROR, "incorrect number of output arguments");
 			break;
+		case PG_STAT_STATEMENTS_COLS_V1_12:
+			if (api_version != PGSS_V1_12)
+				elog(ERROR, "incorrect number of output arguments");
+			break;
 		default:
 			elog(ERROR, "incorrect number of output arguments");
 	}
@@ -1724,15 +1747,11 @@ pg_stat_statements_internal(FunctionCallInfo fcinfo,
 		int			n_writers;
 
 		/* Take the mutex so we can examine variables */
-		{
-			volatile pgssSharedState *s = (volatile pgssSharedState *) pgss;
-
-			SpinLockAcquire(&s->mutex);
-			extent = s->extent;
-			n_writers = s->n_writers;
-			gc_count = s->gc_count;
-			SpinLockRelease(&s->mutex);
-		}
+		SpinLockAcquire(&pgss->mutex);
+		extent = pgss->extent;
+		n_writers = pgss->n_writers;
+		gc_count = pgss->gc_count;
+		SpinLockRelease(&pgss->mutex);
 
 		/* No point in loading file now if there are active writers */
 		if (n_writers == 0)
@@ -1847,15 +1866,16 @@ pg_stat_statements_internal(FunctionCallInfo fcinfo,
 		}
 
 		/* copy counters to a local variable to keep locking time short */
-		{
-			volatile pgssEntry *e = (volatile pgssEntry *) entry;
+		SpinLockAcquire(&entry->mutex);
+		tmp = entry->counters;
+		SpinLockRelease(&entry->mutex);
 
-			SpinLockAcquire(&e->mutex);
-			tmp = e->counters;
-			stats_since = e->stats_since;
-			minmax_stats_since = e->minmax_stats_since;
-			SpinLockRelease(&e->mutex);
-		}
+		/*
+		 * The spinlock is not required when reading these two as they are
+		 * always updated when holding pgss->lock exclusively.
+		 */
+		stats_since = entry->stats_since;
+		minmax_stats_since = entry->minmax_stats_since;
 
 		/* Skip entry if unexecuted (ie, it's a pending "sticky" entry) */
 		if (IS_STICKY(tmp))
@@ -1950,6 +1970,14 @@ pg_stat_statements_internal(FunctionCallInfo fcinfo,
 		{
 			values[i++] = Int64GetDatumFast(tmp.jit_deform_count);
 			values[i++] = Float8GetDatumFast(tmp.jit_deform_time);
+		}
+		if (api_version >= PGSS_V1_12)
+		{
+			values[i++] = Int64GetDatumFast(tmp.parallel_workers_to_launch);
+			values[i++] = Int64GetDatumFast(tmp.parallel_workers_launched);
+		}
+		if (api_version >= PGSS_V1_11)
+		{
 			values[i++] = TimestampTzGetDatum(stats_since);
 			values[i++] = TimestampTzGetDatum(minmax_stats_since);
 		}
@@ -1962,6 +1990,7 @@ pg_stat_statements_internal(FunctionCallInfo fcinfo,
 					 api_version == PGSS_V1_9 ? PG_STAT_STATEMENTS_COLS_V1_9 :
 					 api_version == PGSS_V1_10 ? PG_STAT_STATEMENTS_COLS_V1_10 :
 					 api_version == PGSS_V1_11 ? PG_STAT_STATEMENTS_COLS_V1_11 :
+					 api_version == PGSS_V1_12 ? PG_STAT_STATEMENTS_COLS_V1_12 :
 					 -1 /* fail if you forget to update this assert */ ));
 
 		tuplestore_putvalues(rsinfo->setResult, rsinfo->setDesc, values, nulls);
@@ -1996,13 +2025,9 @@ pg_stat_statements_info(PG_FUNCTION_ARGS)
 		elog(ERROR, "return type must be a row type");
 
 	/* Read global statistics for pg_stat_statements */
-	{
-		volatile pgssSharedState *s = (volatile pgssSharedState *) pgss;
-
-		SpinLockAcquire(&s->mutex);
-		stats = s->stats;
-		SpinLockRelease(&s->mutex);
-	}
+	SpinLockAcquire(&pgss->mutex);
+	stats = pgss->stats;
+	SpinLockRelease(&pgss->mutex);
 
 	values[0] = Int64GetDatum(stats.dealloc);
 	values[1] = TimestampTzGetDatum(stats.stats_reset);
@@ -2169,13 +2194,9 @@ entry_dealloc(void)
 	pfree(entries);
 
 	/* Increment the number of times entries are deallocated */
-	{
-		volatile pgssSharedState *s = (volatile pgssSharedState *) pgss;
-
-		SpinLockAcquire(&s->mutex);
-		s->stats.dealloc += 1;
-		SpinLockRelease(&s->mutex);
-	}
+	SpinLockAcquire(&pgss->mutex);
+	pgss->stats.dealloc += 1;
+	SpinLockRelease(&pgss->mutex);
 }
 
 /*
@@ -2205,17 +2226,13 @@ qtext_store(const char *query, int query_len,
 	 * We use a spinlock to protect extent/n_writers/gc_count, so that
 	 * multiple processes may execute this function concurrently.
 	 */
-	{
-		volatile pgssSharedState *s = (volatile pgssSharedState *) pgss;
-
-		SpinLockAcquire(&s->mutex);
-		off = s->extent;
-		s->extent += query_len + 1;
-		s->n_writers++;
-		if (gc_count)
-			*gc_count = s->gc_count;
-		SpinLockRelease(&s->mutex);
-	}
+	SpinLockAcquire(&pgss->mutex);
+	off = pgss->extent;
+	pgss->extent += query_len + 1;
+	pgss->n_writers++;
+	if (gc_count)
+		*gc_count = pgss->gc_count;
+	SpinLockRelease(&pgss->mutex);
 
 	*query_offset = off;
 
@@ -2244,13 +2261,9 @@ qtext_store(const char *query, int query_len,
 	CloseTransientFile(fd);
 
 	/* Mark our write complete */
-	{
-		volatile pgssSharedState *s = (volatile pgssSharedState *) pgss;
-
-		SpinLockAcquire(&s->mutex);
-		s->n_writers--;
-		SpinLockRelease(&s->mutex);
-	}
+	SpinLockAcquire(&pgss->mutex);
+	pgss->n_writers--;
+	SpinLockRelease(&pgss->mutex);
 
 	return true;
 
@@ -2264,13 +2277,9 @@ error:
 		CloseTransientFile(fd);
 
 	/* Mark our write complete */
-	{
-		volatile pgssSharedState *s = (volatile pgssSharedState *) pgss;
-
-		SpinLockAcquire(&s->mutex);
-		s->n_writers--;
-		SpinLockRelease(&s->mutex);
-	}
+	SpinLockAcquire(&pgss->mutex);
+	pgss->n_writers--;
+	SpinLockRelease(&pgss->mutex);
 
 	return false;
 }
@@ -2408,13 +2417,9 @@ need_gc_qtexts(void)
 	Size		extent;
 
 	/* Read shared extent pointer */
-	{
-		volatile pgssSharedState *s = (volatile pgssSharedState *) pgss;
-
-		SpinLockAcquire(&s->mutex);
-		extent = s->extent;
-		SpinLockRelease(&s->mutex);
-	}
+	SpinLockAcquire(&pgss->mutex);
+	extent = pgss->extent;
+	SpinLockRelease(&pgss->mutex);
 
 	/*
 	 * Don't proceed if file does not exceed 512 bytes per possible entry.
@@ -2733,14 +2738,10 @@ entry_reset(Oid userid, Oid dbid, uint64 queryid, bool minmax_only)
 	 * Reset global statistics for pg_stat_statements since all entries are
 	 * removed.
 	 */
-	{
-		volatile pgssSharedState *s = (volatile pgssSharedState *) pgss;
-
-		SpinLockAcquire(&s->mutex);
-		s->stats.dealloc = 0;
-		s->stats.stats_reset = stats_reset;
-		SpinLockRelease(&s->mutex);
-	}
+	SpinLockAcquire(&pgss->mutex);
+	pgss->stats.dealloc = 0;
+	pgss->stats.stats_reset = stats_reset;
+	SpinLockRelease(&pgss->mutex);
 
 	/*
 	 * Write new empty query file, perhaps even creating a new one to recover

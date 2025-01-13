@@ -3,7 +3,7 @@
  * nodeFuncs.c
  *		Various general-purpose manipulations of Node trees
  *
- * Portions Copyright (c) 1996-2024, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2025, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -1006,10 +1006,7 @@ exprCollation(const Node *expr)
 			{
 				const JsonExpr *jsexpr = (JsonExpr *) expr;
 
-				if (jsexpr->coercion_expr)
-					coll = exprCollation(jsexpr->coercion_expr);
-				else
-					coll = jsexpr->collation;
+				coll = jsexpr->collation;
 			}
 			break;
 		case T_JsonBehavior:
@@ -1265,10 +1262,7 @@ exprSetCollation(Node *expr, Oid collation)
 			{
 				JsonExpr   *jexpr = (JsonExpr *) expr;
 
-				if (jexpr->coercion_expr)
-					exprSetCollation((Node *) jexpr->coercion_expr, collation);
-				else
-					jexpr->collation = collation;
+				jexpr->collation = collation;
 			}
 			break;
 		case T_JsonBehavior:
@@ -1729,8 +1723,7 @@ exprLocation(const Node *expr)
 			loc = ((const Constraint *) expr)->location;
 			break;
 		case T_FunctionParameter:
-			/* just use typename's location */
-			loc = exprLocation((Node *) ((const FunctionParameter *) expr)->argType);
+			loc = ((const FunctionParameter *) expr)->location;
 			break;
 		case T_XmlSerialize:
 			/* XMLSERIALIZE keyword should always be the first thing */
@@ -2027,7 +2020,7 @@ check_functions_in_node(Node *node, check_function_callback checker,
  *			... do special actions for other node types
  *		}
  *		// for any node type not specially processed, do:
- *		return expression_tree_walker(node, my_walker, (void *) context);
+ *		return expression_tree_walker(node, my_walker, context);
  * }
  *
  * The "context" argument points to a struct that holds whatever context
@@ -2367,8 +2360,6 @@ expression_tree_walker_impl(Node *node,
 				if (WALK(jexpr->formatted_expr))
 					return true;
 				if (WALK(jexpr->path_spec))
-					return true;
-				if (WALK(jexpr->coercion_expr))
 					return true;
 				if (WALK(jexpr->passing_values))
 					return true;
@@ -2862,6 +2853,11 @@ range_table_entry_walker_impl(RangeTblEntry *rte,
 		case RTE_RESULT:
 			/* nothing to do */
 			break;
+		case RTE_GROUP:
+			if (!(flags & QTW_IGNORE_GROUPEXPRS))
+				if (WALK(rte->groupexprs))
+					return true;
+			break;
 	}
 
 	if (WALK(rte->securityQuals))
@@ -2897,7 +2893,7 @@ range_table_entry_walker_impl(RangeTblEntry *rte,
  *			... do special transformations of other node types
  *		}
  *		// for any node type not specially processed, do:
- *		return expression_tree_mutator(node, my_mutator, (void *) context);
+ *		return expression_tree_mutator(node, my_mutator, context);
  * }
  *
  * The "context" argument points to a struct that holds whatever context
@@ -2999,7 +2995,7 @@ expression_tree_mutator_impl(Node *node,
 		case T_SortGroupClause:
 		case T_CTESearchClause:
 		case T_MergeSupportFunc:
-			return (Node *) copyObject(node);
+			return copyObject(node);
 		case T_WithCheckOption:
 			{
 				WithCheckOption *wco = (WithCheckOption *) node;
@@ -3411,7 +3407,6 @@ expression_tree_mutator_impl(Node *node,
 				FLATCOPY(newnode, jexpr, JsonExpr);
 				MUTATE(newnode->formatted_expr, jexpr->formatted_expr, Node *);
 				MUTATE(newnode->path_spec, jexpr->path_spec, Node *);
-				MUTATE(newnode->coercion_expr, jexpr->coercion_expr, Node *);
 				MUTATE(newnode->passing_values, jexpr->passing_values, List *);
 				/* assume mutator does not care about passing_names */
 				MUTATE(newnode->on_empty, jexpr->on_empty, JsonBehavior *);
@@ -3608,7 +3603,7 @@ expression_tree_mutator_impl(Node *node,
 			break;
 		case T_PartitionPruneStepCombine:
 			/* no expression sub-nodes */
-			return (Node *) copyObject(node);
+			return copyObject(node);
 		case T_JoinExpr:
 			{
 				JoinExpr   *join = (JoinExpr *) node;
@@ -3899,6 +3894,15 @@ range_table_mutator_impl(List *rtable,
 			case RTE_NAMEDTUPLESTORE:
 			case RTE_RESULT:
 				/* nothing to do */
+				break;
+			case RTE_GROUP:
+				if (!(flags & QTW_IGNORE_GROUPEXPRS))
+					MUTATE(newrte->groupexprs, rte->groupexprs, List *);
+				else
+				{
+					/* else, copy grouping exprs as-is */
+					newrte->groupexprs = copyObject(rte->groupexprs);
+				}
 				break;
 		}
 		MUTATE(newrte->securityQuals, rte->securityQuals, List *);

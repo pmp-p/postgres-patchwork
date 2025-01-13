@@ -5,7 +5,7 @@
  *	to control oid and relfilenumber assignment, and do other special
  *	hacks needed for pg_upgrade.
  *
- *	Copyright (c) 2010-2024, PostgreSQL Global Development Group
+ *	Copyright (c) 2010-2025, PostgreSQL Global Development Group
  *	src/backend/utils/adt/pg_upgrade_support.c
  */
 
@@ -28,7 +28,6 @@
 #include "utils/builtins.h"
 #include "utils/lsyscache.h"
 #include "utils/pg_lsn.h"
-#include "utils/syscache.h"
 
 
 #define CHECK_IS_BINARY_UPGRADE									\

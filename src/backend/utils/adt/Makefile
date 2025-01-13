@@ -79,6 +79,9 @@ OBJS = \
 	orderedsetaggs.o \
 	partitionfuncs.o \
 	pg_locale.o \
+	pg_locale_builtin.o \
+	pg_locale_icu.o \
+	pg_locale_libc.o \
 	pg_lsn.o \
 	pg_upgrade_support.o \
 	pgstatfuncs.o \
@@ -116,6 +119,7 @@ OBJS = \
 	varchar.o \
 	varlena.o \
 	version.o \
+	waitfuncs.o \
 	windowfuncs.o \
 	xid.o \
 	xid8funcs.o \

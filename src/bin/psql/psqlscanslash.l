@@ -8,7 +8,7 @@
  *
  * See fe_utils/psqlscan_int.h for additional commentary.
  *
- * Portions Copyright (c) 1996-2024, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2025, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -37,12 +37,6 @@
  * doesn't presently make use of that argument, so just declare it as int.
  */
 typedef int YYSTYPE;
-
-/*
- * Set the type of yyextra; we use it as a pointer back to the containing
- * PsqlScanState.
- */
-#define YY_EXTRA_TYPE PsqlScanState
 
 /*
  * These variables do not need to be saved across calls.  Yeah, it's a bit
@@ -87,6 +81,12 @@ extern void slash_yyset_column(int column_no, yyscan_t yyscanner);
 %option noyywrap
 %option warn
 %option prefix="slash_yy"
+
+/*
+ * Set the type of yyextra; we use it as a pointer back to the containing
+ * PsqlScanState.
+ */
+%option extra-type="PsqlScanState"
 
 /*
  * OK, here is a short description of lex/flex rules behavior.
@@ -598,9 +598,9 @@ psql_scan_slash_option(PsqlScanState state,
 	psql_scan_reselect_sql_lexer(state);
 
 	/*
-	 * Check the lex result: we should have gotten back either LEXRES_OK
-	 * or LEXRES_EOL (the latter indicating end of string).  If we were inside
-	 * a quoted string, as indicated by final_state, EOL is an error.
+	 * Check the lex result: we should have gotten back either LEXRES_OK or
+	 * LEXRES_EOL (the latter indicating end of string).  If we were inside a
+	 * quoted string, as indicated by final_state, EOL is an error.
 	 */
 	Assert(lexresult == LEXRES_EOL || lexresult == LEXRES_OK);
 
@@ -642,6 +642,7 @@ psql_scan_slash_option(PsqlScanState state,
 			termPQExpBuffer(&mybuf);
 			return NULL;
 		case xslashwholeline:
+
 			/*
 			 * In whole-line mode, we interpret semicolon = true as stripping
 			 * trailing whitespace as well as semicolons; this gives the

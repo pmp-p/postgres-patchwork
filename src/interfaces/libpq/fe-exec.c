@@ -3,7 +3,7 @@
  * fe-exec.c
  *	  functions related to sending a query down to the backend
  *
- * Portions Copyright (c) 1996-2024, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2025, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -2627,7 +2627,7 @@ PQsendTypedCommand(PGconn *conn, char command, char type, const char *target)
 	}
 	else
 	{
-		libpq_append_conn_error(conn, "unknown command type provided");
+		libpq_append_conn_error(conn, "unrecognized message type \"%c\"", command);
 		goto sendFailed;
 	}
 

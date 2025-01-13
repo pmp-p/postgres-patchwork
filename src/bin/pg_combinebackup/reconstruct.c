@@ -3,7 +3,7 @@
  * reconstruct.c
  *		Reconstruct full file from incremental file and backup chain.
  *
- * Copyright (c) 2017-2024, PostgreSQL Global Development Group
+ * Copyright (c) 2017-2025, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
  *	  src/bin/pg_combinebackup/reconstruct.c
@@ -62,7 +62,7 @@ static void write_reconstructed_file(char *input_filename,
 									 bool debug,
 									 bool dry_run);
 static void read_bytes(rfile *rf, void *buffer, unsigned length);
-static void write_block(int wfd, char *output_filename,
+static void write_block(int fd, char *output_filename,
 						uint8 *buffer,
 						pg_checksum_context *checksum_ctx);
 static void read_block(rfile *s, off_t off, uint8 *buffer);
@@ -77,8 +77,9 @@ static void read_block(rfile *s, off_t off, uint8 *buffer);
  *
  * relative_path should be the path to the directory containing this file,
  * relative to the root of the backup (NOT relative to the root of the
- * tablespace). bare_file_name should be the name of the file within that
- * directory, without "INCREMENTAL.".
+ * tablespace). It must always end with a trailing slash. bare_file_name
+ * should be the name of the file within that directory, without
+ * "INCREMENTAL.".
  *
  * n_prior_backups is the number of prior backups, and prior_backup_dirs is
  * an array of pathnames where those backups can be found.
@@ -110,6 +111,10 @@ reconstruct_from_incremental_file(char *input_filename,
 	int			copy_source_index = -1;
 	rfile	   *copy_source = NULL;
 	pg_checksum_context checksum_ctx;
+
+	/* Sanity check the relative_path. */
+	Assert(relative_path[0] != '\0');
+	Assert(relative_path[strlen(relative_path) - 1] == '/');
 
 	/*
 	 * Every block must come either from the latest version of the file or
@@ -174,11 +179,11 @@ reconstruct_from_incremental_file(char *input_filename,
 		 * Look for the full file in the previous backup. If not found, then
 		 * look for an incremental file instead.
 		 */
-		snprintf(source_filename, MAXPGPATH, "%s/%s/%s",
+		snprintf(source_filename, MAXPGPATH, "%s/%s%s",
 				 prior_backup_dirs[sidx], relative_path, bare_file_name);
 		if ((s = make_rfile(source_filename, true)) == NULL)
 		{
-			snprintf(source_filename, MAXPGPATH, "%s/%s/INCREMENTAL.%s",
+			snprintf(source_filename, MAXPGPATH, "%s/%sINCREMENTAL.%s",
 					 prior_backup_dirs[sidx], relative_path, bare_file_name);
 			s = make_incremental_rfile(source_filename);
 		}
@@ -196,7 +201,7 @@ reconstruct_from_incremental_file(char *input_filename,
 
 			/* We need to know the length of the file. */
 			if (fstat(s->fd, &sb) < 0)
-				pg_fatal("could not stat \"%s\": %m", s->filename);
+				pg_fatal("could not stat file \"%s\": %m", s->filename);
 
 			/*
 			 * Since we found a full file, source all blocks from it that
@@ -297,8 +302,7 @@ reconstruct_from_incremental_file(char *input_filename,
 			 * The directory is out of sync with the backup_manifest, so emit
 			 * a warning.
 			 */
-			/*- translator: the first %s is a backup manifest file, the second is a file absent therein */
-			pg_log_warning("\"%s\" contains no entry for \"%s\"",
+			pg_log_warning("manifest file \"%s\" contains no entry for file \"%s\"",
 						   path,
 						   manifest_path);
 			pfree(path);
@@ -322,11 +326,19 @@ reconstruct_from_incremental_file(char *input_filename,
 	 * result, then forget about performing reconstruction and just copy that
 	 * file in its entirety.
 	 *
+	 * If we have only incremental files, and there's no full file at any
+	 * point in the backup chain, something has gone wrong. Emit an error.
+	 *
 	 * Otherwise, reconstruct.
 	 */
 	if (copy_source != NULL)
 		copy_file(copy_source->filename, output_filename,
 				  &checksum_ctx, copy_method, dry_run);
+	else if (sidx == 0 && source[0]->header_length != 0)
+	{
+		pg_fatal("full backup contains unexpected incremental file \"%s\"",
+				 source[0]->filename);
+	}
 	else
 	{
 		write_reconstructed_file(input_filename, output_filename,
@@ -354,7 +366,7 @@ reconstruct_from_incremental_file(char *input_filename,
 		if (s == NULL)
 			continue;
 		if (close(s->fd) != 0)
-			pg_fatal("could not close \"%s\": %m", s->filename);
+			pg_fatal("could not close file \"%s\": %m", s->filename);
 		if (s->relative_block_numbers != NULL)
 			pfree(s->relative_block_numbers);
 		pg_free(s->filename);
@@ -406,7 +418,7 @@ debug_reconstruction(int n_source, rfile **sources, bool dry_run)
 			struct stat sb;
 
 			if (fstat(s->fd, &sb) < 0)
-				pg_fatal("could not stat \"%s\": %m", s->filename);
+				pg_fatal("could not stat file \"%s\": %m", s->filename);
 			if (sb.st_size < s->highest_offset_read)
 				pg_fatal("file \"%s\" is too short: expected %llu, found %llu",
 						 s->filename,
@@ -450,7 +462,7 @@ make_incremental_rfile(char *filename)
 	/* Read and validate magic number. */
 	read_bytes(rf, &magic, sizeof(magic));
 	if (magic != INCREMENTAL_MAGIC)
-		pg_fatal("file \"%s\" has bad incremental magic number (0x%x not 0x%x)",
+		pg_fatal("file \"%s\" has bad incremental magic number (0x%x, expected 0x%x)",
 				 filename, magic, INCREMENTAL_MAGIC);
 
 	/* Read block count. */
@@ -527,7 +539,7 @@ read_bytes(rfile *rf, void *buffer, unsigned length)
 		if (rb < 0)
 			pg_fatal("could not read file \"%s\": %m", rf->filename);
 		else
-			pg_fatal("could not read file \"%s\": read only %d of %u bytes",
+			pg_fatal("could not read file \"%s\": read %d of %u",
 					 rf->filename, rb, length);
 	}
 }
@@ -725,7 +737,7 @@ write_reconstructed_file(char *input_filename,
 
 	/* Close the output file. */
 	if (wfd >= 0 && close(wfd) != 0)
-		pg_fatal("could not close \"%s\": %m", output_filename);
+		pg_fatal("could not close file \"%s\": %m", output_filename);
 }
 
 /*
@@ -746,7 +758,7 @@ write_block(int fd, char *output_filename,
 		if (wb < 0)
 			pg_fatal("could not write file \"%s\": %m", output_filename);
 		else
-			pg_fatal("could not write file \"%s\": wrote only %d of %d bytes",
+			pg_fatal("could not write file \"%s\": wrote %d of %d",
 					 output_filename, wb, BLCKSZ);
 	}
 
@@ -769,10 +781,9 @@ read_block(rfile *s, off_t off, uint8 *buffer)
 	if (rb != BLCKSZ)
 	{
 		if (rb < 0)
-			pg_fatal("could not read file \"%s\": %m", s->filename);
+			pg_fatal("could not read from file \"%s\": %m", s->filename);
 		else
-			pg_fatal("could not read file \"%s\": read only %d of %d bytes at offset %llu",
-					 s->filename, rb, BLCKSZ,
-					 (unsigned long long) off);
+			pg_fatal("could not read from file \"%s\", offset %llu: read %d of %d",
+					 s->filename, (unsigned long long) off, rb, BLCKSZ);
 	}
 }

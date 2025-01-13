@@ -1,4 +1,4 @@
-# Copyright (c) 2021-2024, PostgreSQL Global Development Group
+# Copyright (c) 2021-2025, PostgreSQL Global Development Group
 #
 # This test aims to validate that pg_combinebackup works in the degenerate
 # case where it is invoked on a single full backup and that it can produce
@@ -11,6 +11,11 @@ use File::Compare;
 use PostgreSQL::Test::Cluster;
 use PostgreSQL::Test::Utils;
 use Test::More;
+
+# Can be changed to test the other modes.
+my $mode = $ENV{PG_TEST_PG_COMBINEBACKUP_MODE} || '--copy';
+
+note "testing using mode $mode";
 
 # Set up a new database instance.
 my $node = PostgreSQL::Test::Cluster->new('node');
@@ -53,9 +58,10 @@ sub combine_and_test_one_backup
 combine_and_test_one_backup('nomanifest',
 	qr/could not open file.*backup_manifest/,
 	'--no-manifest');
-combine_and_test_one_backup('csum_none', undef, '--manifest-checksums=NONE');
+combine_and_test_one_backup('csum_none', undef, '--manifest-checksums=NONE',
+	$mode);
 combine_and_test_one_backup('csum_sha224',
-	undef, '--manifest-checksums=SHA224');
+	undef, '--manifest-checksums=SHA224', $mode);
 
 # Verify that SHA224 is mentioned in the SHA224 manifest lots of times.
 my $sha224_manifest =

@@ -2,7 +2,7 @@
  *
  * Write a new backup manifest.
  *
- * Portions Copyright (c) 1996-2024, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2025, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/bin/pg_combinebackup/write_manifest.c
@@ -74,7 +74,7 @@ create_manifest_writer(char *directory, uint64 system_identifier)
  */
 void
 add_file_to_manifest(manifest_writer *mwriter, const char *manifest_path,
-					 size_t size, time_t mtime,
+					 uint64 size, time_t mtime,
 					 pg_checksum_type checksum_type,
 					 int checksum_length,
 					 uint8 *checksum_payload)
@@ -104,7 +104,8 @@ add_file_to_manifest(manifest_writer *mwriter, const char *manifest_path,
 		appendStringInfoString(&mwriter->buf, "\", ");
 	}
 
-	appendStringInfo(&mwriter->buf, "\"Size\": %zu, ", size);
+	appendStringInfo(&mwriter->buf, "\"Size\": %llu, ",
+					 (unsigned long long) size);
 
 	appendStringInfoString(&mwriter->buf, "\"Last-Modified\": \"");
 	enlargeStringInfo(&mwriter->buf, 128);
@@ -184,7 +185,7 @@ finalize_manifest(manifest_writer *mwriter,
 
 	/* Close the file. */
 	if (close(mwriter->fd) != 0)
-		pg_fatal("could not close \"%s\": %m", mwriter->pathname);
+		pg_fatal("could not close file \"%s\": %m", mwriter->pathname);
 	mwriter->fd = -1;
 }
 
@@ -257,9 +258,9 @@ flush_manifest(manifest_writer *mwriter)
 		if (wb != mwriter->buf.len)
 		{
 			if (wb < 0)
-				pg_fatal("could not write \"%s\": %m", mwriter->pathname);
+				pg_fatal("could not write file \"%s\": %m", mwriter->pathname);
 			else
-				pg_fatal("could not write file \"%s\": wrote only %d of %d bytes",
+				pg_fatal("could not write file \"%s\": wrote %d of %d",
 						 mwriter->pathname, (int) wb, mwriter->buf.len);
 		}
 
