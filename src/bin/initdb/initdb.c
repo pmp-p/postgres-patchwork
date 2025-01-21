@@ -2489,6 +2489,8 @@ setlocales(void)
 		else if (strcmp(datlocale, "C.UTF-8") == 0 ||
 				 strcmp(datlocale, "C.UTF8") == 0)
 			canonname = "C.UTF-8";
+		else if (strcmp(datlocale, "PG_UNICODE_FAST") == 0)
+			canonname = "PG_UNICODE_FAST";
 		else
 			pg_fatal("invalid locale name \"%s\" for builtin provider",
 					 datlocale);
@@ -2782,7 +2784,9 @@ setup_locale_encoding(void)
 
 	if (locale_provider == COLLPROVIDER_BUILTIN)
 	{
-		if (strcmp(datlocale, "C.UTF-8") == 0 && encodingid != PG_UTF8)
+		if ((strcmp(datlocale, "C.UTF-8") == 0 ||
+			 strcmp(datlocale, "PG_UNICODE_FAST") == 0) &&
+			encodingid != PG_UTF8)
 			pg_fatal("builtin provider locale \"%s\" requires encoding \"%s\"",
 					 datlocale, "UTF-8");
 	}
@@ -2874,27 +2878,18 @@ setup_text_search(void)
 void
 setup_signals(void)
 {
-	/* some of these are not valid on Windows */
-#ifdef SIGHUP
-	pqsignal(SIGHUP, trapsig);
-#endif
-#ifdef SIGINT
 	pqsignal(SIGINT, trapsig);
-#endif
-#ifdef SIGQUIT
-	pqsignal(SIGQUIT, trapsig);
-#endif
-#ifdef SIGTERM
 	pqsignal(SIGTERM, trapsig);
-#endif
+
+	/* the following are not valid on Windows */
+#ifndef WIN32
+	pqsignal(SIGHUP, trapsig);
+	pqsignal(SIGQUIT, trapsig);
 
 	/* Ignore SIGPIPE when writing to backend, so we can clean up */
-#ifdef SIGPIPE
 	pqsignal(SIGPIPE, SIG_IGN);
-#endif
 
 	/* Prevent SIGSYS so we can probe for kernel calls that might not work */
-#ifdef SIGSYS
 	pqsignal(SIGSYS, SIG_IGN);
 #endif
 }

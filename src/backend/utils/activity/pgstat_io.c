@@ -23,7 +23,6 @@
 static PgStat_PendingIO PendingIOStats;
 static bool have_iostats = false;
 
-
 /*
  * Check that stats have not been counted for any combination of IOObject,
  * IOContext, and IOOp which are not tracked for the passed-in BackendType. If
@@ -66,22 +65,19 @@ pgstat_bktype_io_stats_valid(PgStat_BktypeIO *backend_io,
 }
 
 void
-pgstat_count_io_op(IOObject io_object, IOContext io_context, IOOp io_op, uint32 cnt)
+pgstat_count_io_op(IOObject io_object, IOContext io_context, IOOp io_op,
+				   uint32 cnt, uint64 bytes)
 {
 	Assert((unsigned int) io_object < IOOBJECT_NUM_TYPES);
 	Assert((unsigned int) io_context < IOCONTEXT_NUM_TYPES);
-	Assert((unsigned int) io_op < IOOP_NUM_TYPES);
+	Assert(pgstat_is_ioop_tracked_in_bytes(io_op) || bytes == 0);
 	Assert(pgstat_tracks_io_op(MyBackendType, io_object, io_context, io_op));
 
-	if (pgstat_tracks_backend_bktype(MyBackendType))
-	{
-		PgStat_BackendPending *entry_ref;
-
-		entry_ref = pgstat_prep_backend_pending(MyProcNumber);
-		entry_ref->pending_io.counts[io_object][io_context][io_op] += cnt;
-	}
-
 	PendingIOStats.counts[io_object][io_context][io_op] += cnt;
+	PendingIOStats.bytes[io_object][io_context][io_op] += bytes;
+
+	/* Add the per-backend counts */
+	pgstat_count_backend_io_op(io_object, io_context, io_op, cnt, bytes);
 
 	have_iostats = true;
 }
@@ -114,7 +110,7 @@ pgstat_prepare_io_time(bool track_io_guc)
  */
 void
 pgstat_count_io_op_time(IOObject io_object, IOContext io_context, IOOp io_op,
-						instr_time start_time, uint32 cnt)
+						instr_time start_time, uint32 cnt, uint64 bytes)
 {
 	if (track_io_timing)
 	{
@@ -143,17 +139,12 @@ pgstat_count_io_op_time(IOObject io_object, IOContext io_context, IOOp io_op,
 		INSTR_TIME_ADD(PendingIOStats.pending_times[io_object][io_context][io_op],
 					   io_time);
 
-		if (pgstat_tracks_backend_bktype(MyBackendType))
-		{
-			PgStat_BackendPending *entry_ref;
-
-			entry_ref = pgstat_prep_backend_pending(MyProcNumber);
-			INSTR_TIME_ADD(entry_ref->pending_io.pending_times[io_object][io_context][io_op],
-						   io_time);
-		}
+		/* Add the per-backend count */
+		pgstat_count_backend_io_op_time(io_object, io_context, io_op,
+										io_time);
 	}
 
-	pgstat_count_io_op(io_object, io_context, io_op, cnt);
+	pgstat_count_io_op(io_object, io_context, io_op, cnt, bytes);
 }
 
 PgStat_IO *
@@ -218,6 +209,9 @@ pgstat_io_flush_cb(bool nowait)
 
 				bktype_shstats->counts[io_object][io_context][io_op] +=
 					PendingIOStats.counts[io_object][io_context][io_op];
+
+				bktype_shstats->bytes[io_object][io_context][io_op] +=
+					PendingIOStats.bytes[io_object][io_context][io_op];
 
 				time = PendingIOStats.pending_times[io_object][io_context][io_op];
 

@@ -264,6 +264,7 @@ BitmapAndState
 BitmapHeapPath
 BitmapHeapScan
 BitmapHeapScanInstrumentation
+BitmapHeapScanDesc
 BitmapHeapScanState
 BitmapIndexScan
 BitmapIndexScanState
@@ -384,6 +385,7 @@ CaseTestExpr
 CaseWhen
 Cash
 CastInfo
+CatCInProgress
 CatCList
 CatCTup
 CatCache
@@ -457,6 +459,7 @@ CommonEntry
 CommonTableExpr
 CompactAttribute
 CompareScalarsContext
+CompareType
 CompiledExprState
 CompositeIOData
 CompositeTypeStmt
@@ -1983,6 +1986,7 @@ PX_Combo
 PX_HMAC
 PX_MD
 Page
+PageData
 PageGistNSN
 PageHeader
 PageHeaderData
@@ -2477,6 +2481,10 @@ ResultRelInfo
 ResultState
 ReturnSetInfo
 ReturnStmt
+ReturningClause
+ReturningExpr
+ReturningOption
+ReturningOptionKind
 RevmapContents
 RevokeRoleGrantAction
 RewriteMappingDataEntry
@@ -2493,7 +2501,6 @@ RoleSpecType
 RoleStmtType
 RollupData
 RowCompareExpr
-RowCompareType
 RowExpr
 RowIdentityVarInfo
 RowMarkClause
@@ -2624,6 +2631,7 @@ SetOperation
 SetOperationStmt
 SetQuantifier
 SetToDefault
+SetVarReturningType_context
 SetupWorkerPtrType
 ShDependObjectInfo
 SharedAggInfo
@@ -3030,6 +3038,7 @@ TypeCat
 TypeFuncClass
 TypeInfo
 TypeName
+TzAbbrevCache
 U32
 U8
 UChar
@@ -3085,6 +3094,7 @@ Var
 VarBit
 VarChar
 VarParamState
+VarReturningType
 VarString
 VarStringSortSupport
 Variable
@@ -3745,6 +3755,7 @@ pg_sha256_ctx
 pg_sha384_ctx
 pg_sha512_ctx
 pg_snapshot
+pg_special_case
 pg_stack_base_t
 pg_time_t
 pg_time_usec_t
